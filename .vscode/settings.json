@@ -1,0 +1,8 @@
+{
+    "files.exclude": {
+        ".cache/": true,
+        "deps_src/": true,
+        "deps/": true,
+        "obj/": true,
+    },
+}

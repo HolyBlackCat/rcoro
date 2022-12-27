@@ -56,6 +56,7 @@ namespace rcoro
         // Used internally when constructing a coroutine wrapper.
         struct ConstructCoroTag {explicit ConstructCoroTag() = default;};
 
+        // Coroutine state.
         enum class State
         {
             null, // Default-constructed.
@@ -65,12 +66,17 @@ namespace rcoro
             finished_exception,
         };
 
+        // Has no-op assignment, templated for any type.
         struct Sink
         {
             constexpr Sink() {}
             template <typename T>
             constexpr void operator=(T &&) {}
         };
+
+        // Wraps a value into a type.
+        template <auto N>
+        struct ValueTag {static constexpr auto value = N;};
 
         // A type list.
         template <typename ...P>
@@ -97,6 +103,13 @@ namespace rcoro
         template <typename T, int N> requires(N >= 0)
         using VarDescFor = typename TypeAt<N + 1, typename T::_rcoro_vars>::type;
 
+        // Returns the number of yield points in a coroutine.
+        template <typename T>
+        struct NumYields : std::integral_constant<int, T::_rcoro_yields::size - 1> {};
+        // Returns description for a single yield point.
+        // Note offsetting the index by one. We need it because the 0th description is `void`, to simplify the macros.
+        template <typename T, int N> requires(N >= 0)
+        using YieldDescFor = typename TypeAt<N + 1, typename T::_rcoro_yields>::type;
 
         // Stateful trick to store var-to-var overlap data.
         template <typename T, int N>
@@ -113,11 +126,42 @@ namespace rcoro
         struct VarVarReachWriter<false, T, N, M> {};
         constexpr void _adl_detail_rcoro_var_var_reach() {} // Dummy ADL target.
         template <typename T, int A, int B>
-        struct VarVarReach : std::bool_constant<_adl_detail_rcoro_var_var_reach(VarVarReachReader<T,A>{})[B]> {};
+        struct VarVarReach : std::bool_constant<_adl_detail_rcoro_var_var_reach(VarVarReachReader<T, A>{})[B]> {};
         template <typename T, int A>
         struct VarVarReach<T, A, A> : std::true_type {};
         template <typename T, int A, int B> requires(A < B)
         struct VarVarReach<T, A, B> : VarVarReach<T, B, A> {};
+
+        // Stateful trick to store var-to-yield overlap data.
+        template <typename T, int N>
+        struct VarYieldReachReader
+        {
+            friend constexpr auto _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, N>);
+        };
+        template <bool Write, typename T, int N, auto M>
+        struct VarYieldReachWriter
+        {
+            friend constexpr auto _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, N>) {return M;}
+        };
+        template <typename T, int N, auto M>
+        struct VarYieldReachWriter<false, T, N, M> {};
+        constexpr void _adl_detail_rcoro_var_yield_reach() {} // Dummy ADL target.
+        template <typename T, int V, int Y>
+        struct VarYieldReach : std::bool_constant<(
+            _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, Y>{}).size() > V
+            && _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, Y>{})[V]
+        )> {};
+        // An array of all variables reachable from a yield point.
+        template <typename T, int Y>
+        constexpr auto vars_reachable_from_yield()
+        {
+            return []<int ...V>(std::integer_sequence<int, V...>){
+                std::array<int, (VarYieldReach<T, V, Y>::value + ... + 0)> ret;
+                int pos = 0;
+                ((VarYieldReach<T, V, Y>::value ? void(ret[pos++] = V) : void()), ...);
+                return ret;
+            }(std::make_integer_sequence<int, NumVars<T>::value>{});
+        }
 
         // Stateful trick to store variable offsets.
         template <typename T, int N>
@@ -314,6 +358,7 @@ namespace rcoro
     }
 
     // Whether `T` is a template argument of `coro<??>`.
+    // Can also be obtained from `coro<??>` as `::tag`.
     template <typename T>
     concept tag = requires
     {
@@ -321,6 +366,9 @@ namespace rcoro
         typename T::_rcoro_data_t;
         typename T::_rcoro_lambda_t;
     };
+
+
+    // Examining variables:
 
     // The number of variables in a coroutine.
     template <tag T>
@@ -334,16 +382,39 @@ namespace rcoro
     template <tag T, int V>
     using var_type = typename detail::VarDescFor<typename T::_rcoro_marker_t, V>::type;
 
+
+    // Examining yield points:
+
+    // The number of yield points.
+    template <tag T>
+    constexpr int num_yields = detail::NumYields<typename T::_rcoro_marker_t>::value;
+
+    // The name of a yield point.
+    template <tag T, int Y>
+    constexpr const_string yield_name = detail::YieldDescFor<typename T::_rcoro_marker_t, Y>::value;
+
+    // Whether variable `V` exists at yield point `Y`.
+    template <tag T, int V, int Y>
+    constexpr bool var_lifetime_overlaps_yield = detail::VarYieldReach<typename T::_rcoro_marker_t, V, Y>::value;
+
+    // A list of variables existing at yield point `Y`, of type `std::array<int, N>`.
+    template <tag T, int Y>
+    constexpr auto yield_vars = detail::vars_reachable_from_yield<typename T::_rcoro_marker_t, Y>();
+
+
+    // Examining low-level variable layout:
+
+    // Returns the stack frame size of the coroutine.
+    template <tag T>
+    constexpr std::size_t frame_size = detail::FrameSize<typename T::_rcoro_marker_t>::value;
+    // Returns the stack frame alignment of the coroutine.
+    template <tag T>
+    constexpr std::size_t frame_alignment = detail::FrameAlignment<typename T::_rcoro_marker_t>::value;
+
     // The offset of variable `V` in the stack frame.
     // Different variables can overlap if `var_lifetime_overlaps_var` is false for them.
     template <tag T, int V>
     constexpr std::size_t var_offset = detail::VarOffset<typename T::_rcoro_marker_t, V>::value;
-
-    // Returns the stack frame size and alignment of the coroutine.
-    template <tag T>
-    constexpr std::size_t frame_size = detail::FrameSize<typename T::_rcoro_marker_t>::value;
-    template <tag T>
-    constexpr std::size_t frame_alignment = detail::FrameAlignment<typename T::_rcoro_marker_t>::value;
 
     // Whether variables `A` and `B` have overlapping lifetime.
     template <tag T, int A, int B>
@@ -424,7 +495,7 @@ namespace rcoro
 // Usage: `RC_VAR(name, type);` or `VAR(name, type) = init;` or `VAR(name, type)(init...);`.
 #define RC_VAR(name, .../*type*/) )(var,name,__VA_ARGS__)(code,
 // Pause a coroutine. `ident` is a unique identifier for this yield point.
-#define RC_YIELD(ident) )(yield,ident)(code,
+#define RC_YIELD(name) )(yield,name)(code,
 #define RCORO(...) \
     [&]{ \
         /* A marker for stateful templates. */\
@@ -432,6 +503,8 @@ namespace rcoro
         { \
             /* The variable descriptions. */\
             using _rcoro_vars [[maybe_unused]] = ::rcoro::detail::TypeList<void SF_FOR_EACH(DETAIL_RCORO_VARDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
+            /* The yield point descriptions. */\
+            using _rcoro_yields [[maybe_unused]] = ::rcoro::detail::TypeList<void SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
         }; \
         /* Can't create templates at function scope, so must use a template lambda. */\
         auto _rcoro_data_lambda = []<bool _rcoro_FirstPass = false>() \
@@ -510,9 +583,9 @@ namespace rcoro
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))) = true; \
     [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
     /* Analyze lifetime overlap with other variables. */\
-    (void)::rcoro::detail::VarVarReachWriter<true, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
+    (void)::rcoro::detail::VarVarReachWriter<_rcoro_FirstPass, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
     /* Determine the stack frame offset for this variable. */\
-    (void)::rcoro::detail::VarOffsetWriterAuto<true, _rcoro_Marker, varindex>{}; \
+    (void)::rcoro::detail::VarOffsetWriterAuto<_rcoro_FirstPass, _rcoro_Marker, varindex>{}; \
   SF_CAT(_rcoro_label_, ident):\
     /* If we're not jumping, initialize the variable. */\
     if (_rcoro_jump_to == ::rcoro::detail::coro_pos_t(-1)) \
@@ -530,9 +603,13 @@ namespace rcoro
     /* Note that we don't directly use `name` here, to avoid silencing the "unused variable" warning. */\
     ::rcoro::detail::Sink{} = *_rcoro_data.DETAIL_RCORO_STORAGE_VAR_NAME(ident, name)
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) \
+    /* Analyze lifetime overlap with other variables. */\
+    (void)::rcoro::detail::VarYieldReachWriter<_rcoro_FirstPass, _rcoro_Marker, yieldindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
+    /* Remember the position. */\
     _rcoro_data._rcoro_pos = yieldindex; \
+    /* Pause. */\
     return; \
-  SF_CAT(_rcoro_label_, ident):\
+  SF_CAT(_rcoro_label_, ident): \
     if (_rcoro_jump_to != ::rcoro::detail::coro_pos_t(-1)) \
     { \
         if (_rcoro_jump_to == yieldindex) \
@@ -541,11 +618,6 @@ namespace rcoro
         else \
             /* Jump to the next location. */\
             goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
-    } \
-    else \
-    { \
-        /* Record the current position. */\
-        _rcoro_data._rcoro_pos = yieldindex; \
     }
 // The code inserted after the loop.
 #define DETAIL_RCORO_CODEGEN_LOOP_FINAL(n, d) DETAIL_RCORO_CALL(DETAIL_RCORO_CODEGEN_LOOP_FINAL_, DETAIL_RCORO_IDENTITY d)
@@ -580,6 +652,12 @@ namespace rcoro
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::VarDesc<__VA_ARGS__, #name>
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, ...)
 
+// The loop body to generate yield point descriptions for reflection.
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_YIELDDESC_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, ...)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) , ::rcoro::detail::ValueTag<::rcoro::const_string("" name "")>
+
 
 
 
@@ -588,6 +666,7 @@ namespace rcoro
 // auto& x = y = 1
 
 #include <iostream>
+#include <iomanip>
 
 template <typename T>
 std::string_view type_name()
@@ -613,11 +692,14 @@ int main()
         RC_VAR(i, int) = 0;
         for (; i < 5; i++)
         {
-            RC_YIELD();
             RC_VAR(j, char) = 0;
+            RC_YIELD();
             std::cout << i * 10 << '\n';
             RC_VAR(k, short) = 0;
             RC_VAR(l, int) = 0;
+            (void)j;
+            (void)k;
+            (void)l;
         }
     );
 
@@ -628,23 +710,53 @@ int main()
     std::cout << "num_vars = " << rcoro::num_vars<tag> << '\n';
     []<std::size_t ...I>(std::index_sequence<I...>){
         ([]{
-            std::cout << "* var " << I << '\n';
-            std::cout << "  name = " << rcoro::var_name<tag, I>.view() << '\n';
-            std::cout << "  type = " << type_name<rcoro::var_type<tag, I>>() << '\n';
-            std::cout << "  reach = ";
+            std::cout << " " << I << ". " << rcoro::var_name<tag, I>.view() << ", " << type_name<rcoro::var_type<tag, I>>() << '\n';
+            std::cout << "    offset=" << rcoro::var_offset<tag, I> << ", size=" << sizeof(rcoro::var_type<tag, I>) << ", align=" << alignof(rcoro::var_type<tag, I>) << '\n';
             constexpr auto i = I;
             []<std::size_t ...J>(std::index_sequence<J...>){
-                ([]{
-                    std::cout << rcoro::var_lifetime_overlaps_var<tag, i, J>;
+                bool first = true;
+                ([&]{
+                    if constexpr (rcoro::var_lifetime_overlaps_var<tag, i, J>)
+                    {
+                        if (first)
+                        {
+                            first = false;
+                            std::cout << "    overlaps: ";
+                        }
+                        else
+                            std::cout << ", ";
+                        std::cout << J << "." << rcoro::var_name<tag, J>.view();
+                    }
                 }(), ...);
+                if (!first)
+                    std::cout << '\n';
             }(std::make_index_sequence<i>{});
-            std::cout << '\n';
-
-            std::cout << "  offset = " << rcoro::var_offset<tag, I> << '\n';
             std::cout << '\n';
         }(), ...);
     }(std::make_index_sequence<rcoro::num_vars<tag>>{});
 
+    std::cout << "num_yields = " << rcoro::num_yields<tag> << '\n';
+    []<std::size_t ...I>(std::index_sequence<I...>){
+        ([]{
+            std::cout << " " << I << ". " << std::quoted(rcoro::yield_name<tag, I>.view());
+            constexpr int i = I;
+            []<std::size_t ...J>(std::index_sequence<J...>){
+                bool first = true;
+                ([&]{
+                    if (first)
+                    {
+                        first = false;
+                        std::cout << " overlaps: ";
+                    }
+                    else
+                        std::cout << ", ";
+                    constexpr int index = rcoro::yield_vars<tag, i>[J];
+                    std::cout << index << "." << rcoro::var_name<tag, index>.view();
+                }(), ...);
+            }(std::make_index_sequence<rcoro::yield_vars<tag, I>.size()>{});
+            std::cout << '\n';
+        }(), ...);
+    }(std::make_index_sequence<rcoro::num_yields<tag>>{});
 
     std::cout << "-\n";
     while (x.resume())

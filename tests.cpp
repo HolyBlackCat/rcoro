@@ -812,6 +812,12 @@ std::string_view type_name()
 
 int main()
 {
+    // * Tests (lifetime, exception recovery, rule-of-five)
+    // * Reflected variables.
+    // * Passing parameters.
+    // * Constexpr tests.
+    // * CI
+
     // int rcoro;
     // int detail;
     // int std;

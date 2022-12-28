@@ -443,6 +443,17 @@ namespace rcoro
                 if (&other == this)
                     return *this;
                 reset();
+
+                struct Guard
+                {
+                    Frame &other;
+                    ~Guard()
+                    {
+                        other.reset();
+                    }
+                };
+                Guard guard{other};
+
                 handle_vars(other.pos,
                     [&](auto index)
                     {
@@ -457,7 +468,6 @@ namespace rcoro
                 );
                 pos = other.pos;
                 state = other.state;
-                other.reset();
                 return *this;
             }
             constexpr ~Frame()

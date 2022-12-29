@@ -4,8 +4,8 @@
 #include <array>
 #include <cstddef>
 #include <iosfwd>
+#include <iterator>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
@@ -524,6 +524,20 @@ namespace rcoro
             constexpr VarGuard(const Frame *) {}
         };
 
+        // An array of pairs, mapping variable names to their indices.
+        template <typename T>
+        constexpr auto var_name_to_index_mapping = []{
+            std::array<std::pair<std::string_view, int>, NumVars<T>::value> ret;
+            const_for<NumVars<T>::value>([&](auto index)
+            {
+                constexpr int i = index.value;
+                ret[i].first = VarDescFor<T, i>::name.view();
+                ret[i].second = i;
+            });
+            std::sort(ret.begin(), ret.end());
+            return ret;
+        }();
+
         // Getting the type name as string:
         template <typename T>
         constexpr std::string_view raw_type_name()
@@ -589,6 +603,27 @@ namespace rcoro
     // The type of a coroutine variable `V`.
     template <tag T, int V>
     using var_type = typename detail::VarDescFor<typename T::_rcoro_marker_t, V>::type;
+
+
+    // Variable names:
+
+    // Converts a variable name to its index.
+    // Returns `-1` if the name is unknown, or `-2` if it's ambiguous.
+    template <tag T>
+    [[nodiscard]] constexpr int var_name_to_index_if_valid(std::string_view name)
+    {
+        const auto &arr = detail::var_name_to_index_mapping<typename T::_rcoro_marker_t>;
+        auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
+        if (it == arr.end() || it->first != name)
+            return -1; // Unknown name.
+        auto next_it = std::next(it);
+        if (next_it != arr.end() && next_it->first == name)
+            return -2; // Ambiguous name.
+        return it->second;
+    }
+    // Same, but works with constexpr strings, and causes a compilation error if the name is invalid.
+    template <tag T, const_string Name> requires(var_name_to_index_if_valid<T>(Name.view()) >= 0)
+    constexpr int var_index = var_name_to_index_if_valid<T>(Name.view());
 
 
     // Examining yield points:
@@ -744,6 +779,11 @@ namespace rcoro
             }
             return frame.template var_exists<V>();
         }
+        template <const_string Name>
+        [[nodiscard]] constexpr bool var_exists() const
+        {
+            return var_exists<var_index<T, Name>>();
+        }
 
         template <int V>
         [[nodiscard]] constexpr var_type<T, V> &var()
@@ -760,6 +800,8 @@ namespace rcoro
         {
             return const_cast<coro *>(this)->var<V>();
         }
+        template <const_string Name> [[nodiscard]] constexpr       var_type<T, var_index<T, Name>> &var()       {return var<var_index<T, Name>>();}
+        template <const_string Name> [[nodiscard]] constexpr const var_type<T, var_index<T, Name>> &var() const {return var<var_index<T, Name>>();}
 
         // Runs a single step of the coroutine. Returns the new value of `unfinished()`.
         // Does nothing when applied to a not `unfinished()` coroutine.
@@ -989,8 +1031,8 @@ int main()
 {
     // * Fix state manipulations to prevent a single thread from abusing coroutines.
     // * Tests (lifetime, exception recovery, rule-of-five)
-    // * Reflected variables.
     // * Passing parameters.
+    // * Serialization-deserialization tests.
     // * Constexpr tests.
     // * CI
 
@@ -1021,21 +1063,26 @@ int main()
         }
     );
 
-    ::std::cout << "{{\n";
-    ::std::cout << x;
-    ::std::cout << "}}\n";
+    // ::std::cout << "{{\n";
+    // ::std::cout << x;
+    // ::std::cout << "}}\n";
+
+    // using tag = decltype(x)::tag;
 
     ::std::cout << "-\n";
     while (x.resume())
     {
-        ::std::cout << "{{\n";
-        ::std::cout << x;
-        ::std::cout << "}}\n";
+        if (x.var_exists<"i">() && x.var<"i">() == 2)
+            x.var<"i">() = 3;
+        std::cout << "---\n";
+        // ::std::cout << "{{\n";
+        // ::std::cout << x;
+        // ::std::cout << "}}\n";
     }
 
-    ::std::cout << "{{\n";
-    ::std::cout << x;
-    ::std::cout << "}}\n";
+    // ::std::cout << "{{\n";
+    // ::std::cout << x;
+    // ::std::cout << "}}\n";
 
-    std::cout << rcoro::debug_info<decltype(x)::tag> << '\n';
+    // std::cout << rcoro::debug_info<decltype(x)::tag> << '\n';
 }

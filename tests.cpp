@@ -51,6 +51,10 @@ namespace rcoro
         }
     };
 
+    // Some string-to-int functions below return those.
+    constexpr int unknown_name = -1;
+    constexpr int ambiguous_name = -2;
+
     namespace detail
     {
         // Returns an invalid reference.
@@ -537,6 +541,19 @@ namespace rcoro
             std::sort(ret.begin(), ret.end());
             return ret;
         }();
+        // Same for yields.
+        template <typename T>
+        constexpr auto yield_name_to_index_mapping = []{
+            std::array<std::pair<std::string_view, int>, NumYields<T>::value> ret;
+            const_for<NumYields<T>::value>([&](auto index)
+            {
+                constexpr int i = index.value;
+                ret[i].first = YieldDescFor<T, i>::name.view();
+                ret[i].second = i;
+            });
+            std::sort(ret.begin(), ret.end());
+            return ret;
+        }();
 
         // Getting the type name as string:
         template <typename T>
@@ -604,26 +621,52 @@ namespace rcoro
     template <tag T, int V>
     using var_type = typename detail::VarDescFor<typename T::_rcoro_marker_t, V>::type;
 
-
-    // Variable names:
+    // Variable name helpers:
 
     // Converts a variable name to its index.
-    // Returns `-1` if the name is unknown, or `-2` if it's ambiguous.
+    // Returns a negative error code on failure: either `unknown_name` or `ambiguous_name`.
     template <tag T>
-    [[nodiscard]] constexpr int var_name_to_index_if_valid(std::string_view name)
+    [[nodiscard]] constexpr int var_name_to_index_or_negative(std::string_view name)
     {
         const auto &arr = detail::var_name_to_index_mapping<typename T::_rcoro_marker_t>;
         auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
         if (it == arr.end() || it->first != name)
-            return -1; // Unknown name.
+            return unknown_name;
         auto next_it = std::next(it);
         if (next_it != arr.end() && next_it->first == name)
-            return -2; // Ambiguous name.
+            return ambiguous_name;
         return it->second;
     }
-    // Same, but works with constexpr strings, and causes a compilation error if the name is invalid.
-    template <tag T, const_string Name> requires(var_name_to_index_if_valid<T>(Name.view()) >= 0)
-    constexpr int var_index = var_name_to_index_if_valid<T>(Name.view());
+    // Same, but throws on failure.
+    template <tag T>
+    [[nodiscard]] constexpr int var_name_to_index(std::string_view name)
+    {
+        int ret = var_name_to_index_or_negative<T>(name);
+        if (ret == ambiguous_name)
+            throw std::runtime_error("Ambiguous coroutine variable name: `" + std::string(name) + "`.");
+        if (ret < 0)
+            throw std::runtime_error("Unknown coroutine variable name: `" + std::string(name) + "`.");
+        return ret;
+    }
+    // Same, but works with constexpr strings, and causes a soft compilation error if the name is invalid.
+    template <tag T, const_string Name>
+    requires(var_name_to_index_or_negative<T>(Name.view()) >= 0)
+    constexpr int var_index = var_name_to_index_or_negative<T>(Name.view());
+
+    // Given a variable index, returns its name. Same as `var_name`, but with a possibly dynamic index.
+    // Throws if the index is out of range.
+    template <tag T>
+    [[nodiscard]] constexpr std::string_view var_index_to_name(int i)
+    {
+        if (i < 0 || i >= num_vars<T>)
+            throw std::runtime_error("Coroutine variable index is out of range.");
+        std::string_view ret;
+        detail::with_const_index<num_vars<T>>([&](auto index)
+        {
+            ret = var_name<T, index.value>;
+        });
+        return ret;
+    }
 
 
     // Examining yield points:
@@ -643,6 +686,77 @@ namespace rcoro
     // A list of variables existing at yield point `Y`, of type `std::array<int, N>`.
     template <tag T, int Y>
     constexpr auto yield_vars = detail::vars_reachable_from_yield<typename T::_rcoro_marker_t, Y>();
+
+    // Yield point name helpers:
+
+    // If true, all yield points are uniquely named. The names can't be empty.
+    // If there are no yields, returns true.
+    template <tag T>
+    constexpr bool yield_points_uniquely_named = []<int ...I>(std::integer_sequence<int, I...>){
+        if constexpr (sizeof...(I) == 0)
+        {
+            return true;
+        }
+        else
+        {
+            // Check that all yields are named.
+            if ((yield_name<T, I>.view().empty() || ...))
+                return false; // Some are unnamed.
+
+            // Make sure the names are unique.
+            std::array<std::string_view, sizeof...(I)> arr = {yield_name<T, I>.view()...};
+            std::sort(arr.begin(), arr.end());
+            if (std::adjacent_find(arr.begin(), arr.end()) != arr.end())
+                return false; // Have duplicate names.
+
+            return true;
+        }
+    }(std::make_integer_sequence<int, num_yields<T>>{});
+
+    // Converts a yield point name to its index.
+    // Returns a negative error code on failure: either `unknown_name` or `ambiguous_name`.
+    template <tag T>
+    [[nodiscard]] constexpr int yield_name_to_index_or_negative(std::string_view name)
+    {
+        const auto &arr = detail::yield_name_to_index_mapping<typename T::_rcoro_marker_t>;
+        auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
+        if (it == arr.end() || it->first != name)
+            return unknown_name;
+        auto next_it = std::next(it);
+        if (next_it != arr.end() && next_it->first == name)
+            return ambiguous_name;
+        return it->second;
+    }
+    // Same, but throws on failure.
+    template <tag T>
+    [[nodiscard]] constexpr int yield_name_to_index(std::string_view name)
+    {
+        int ret = yield_name_to_index_or_negative<T>(name);
+        if (ret == ambiguous_name)
+            throw std::runtime_error("Ambiguous coroutine yield point name: `" + std::string(name) + "`.");
+        if (ret < 0)
+            throw std::runtime_error("Unknown coroutine yield point name: `" + std::string(name) + "`.");
+        return ret;
+    }
+    // Same, but works with constexpr strings, and causes a soft compilation error if the name is invalid.
+    template <tag T, const_string Name>
+    requires(yield_name_to_index_or_negative<T>(Name.view()) >= 0)
+    constexpr int yield_index = yield_name_to_index_or_negative<T>(Name.view());
+
+    // Given a yield point index, returns its name. Same as `yield_name`, but with a possibly dynamic index.
+    // Throws if the index is out of range.
+    template <tag T>
+    [[nodiscard]] constexpr std::string_view yield_index_to_name(int i)
+    {
+        if (i < 0 || i >= num_vars<T>)
+            throw std::runtime_error("Coroutine yield point index is out of range.");
+        std::string_view ret;
+        detail::with_const_index<num_vars<T>>([&](auto index)
+        {
+            ret = var_name<T, index.value>;
+        });
+        return ret;
+    }
 
 
     // Examining low-level variable layout:
@@ -739,6 +853,9 @@ namespace rcoro
             resume();
         }
 
+
+        // Examining coroutine state:
+
         // Each coroutine can be in one of three states:
         // * empty (aka default-constructed),
         // * unfinished (either running or paused), and
@@ -762,46 +879,8 @@ namespace rcoro
         // Finished running because of an exception.
         [[nodiscard]] constexpr bool finished_with_exception() const noexcept {return frame.state == detail::State::finished_exception;}
 
-        // Returns the current yield point, or `-1` if none.
-        [[nodiscard]] constexpr int position() const noexcept {return frame.pos;}
 
-        // Returns true if the variable currently exists.
-        // Throws if the coroutine is currently running.
-        template <int V>
-        [[nodiscard]] constexpr bool var_exists() const
-        {
-            if (unfinished_executing())
-                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
-            if (!unfinished_paused())
-            {
-                RC_ASSERT(!frame.template var_exists<V>());
-                return false;
-            }
-            return frame.template var_exists<V>();
-        }
-        template <const_string Name>
-        [[nodiscard]] constexpr bool var_exists() const
-        {
-            return var_exists<var_index<T, Name>>();
-        }
-
-        template <int V>
-        [[nodiscard]] constexpr var_type<T, V> &var()
-        {
-            if (unfinished_executing())
-                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
-            RC_ASSERT(!unfinished_paused() <=/*implies*/ !frame.template var_exists<V>());
-            if (!frame.template var_exists<V>())
-                throw std::runtime_error("The coroutine variable `" + std::string(var_name<T, V>.view()) + "` doesn't exist at this point.");
-            return frame.template var<V>();
-        }
-        template <int V>
-        [[nodiscard]] constexpr const var_type<T, V> &var() const
-        {
-            return const_cast<coro *>(this)->var<V>();
-        }
-        template <const_string Name> [[nodiscard]] constexpr       var_type<T, var_index<T, Name>> &var()       {return var<var_index<T, Name>>();}
-        template <const_string Name> [[nodiscard]] constexpr const var_type<T, var_index<T, Name>> &var() const {return var<var_index<T, Name>>();}
+        // Resuming the coroutine:
 
         // Runs a single step of the coroutine. Returns the new value of `unfinished()`.
         // Does nothing when applied to a not `unfinished()` coroutine.
@@ -839,6 +918,82 @@ namespace rcoro
             return unfinished();
         }
 
+
+        // Variable reflection:
+
+        // Returns true if the variable currently exists.
+        // Throws if the coroutine is currently running.
+        template <int V>
+        [[nodiscard]] constexpr bool var_exists() const
+        {
+            if (unfinished_executing())
+                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
+            if (!unfinished_paused())
+            {
+                RC_ASSERT(!frame.template var_exists<V>());
+                return false;
+            }
+            return frame.template var_exists<V>();
+        }
+        template <const_string Name>
+        [[nodiscard]] constexpr bool var_exists() const
+        {
+            return var_exists<var_index<T, Name>>();
+        }
+
+        // Returns a variable. Throws if it doesn't exist.
+        // Throws if the coroutine is currently running.
+        template <int V>
+        [[nodiscard]] constexpr var_type<T, V> &var()
+        {
+            if (unfinished_executing())
+                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
+            RC_ASSERT(!unfinished_paused() <=/*implies*/ !frame.template var_exists<V>());
+            if (!frame.template var_exists<V>())
+                throw std::runtime_error("The coroutine variable `" + std::string(var_name<T, V>.view()) + "` doesn't exist at this point.");
+            return frame.template var<V>();
+        }
+        template <int V>
+        [[nodiscard]] constexpr const var_type<T, V> &var() const
+        {
+            return const_cast<coro *>(this)->var<V>();
+        }
+        template <const_string Name> [[nodiscard]] constexpr       var_type<T, var_index<T, Name>> &var()       {return var<var_index<T, Name>>();}
+        template <const_string Name> [[nodiscard]] constexpr const var_type<T, var_index<T, Name>> &var() const {return var<var_index<T, Name>>();}
+
+
+        // Serialization/deserialization:
+
+        // Returns the current yield point, or `-1` if none.
+        [[nodiscard]] constexpr int yield_pos() const noexcept {return frame.pos;}
+        // Returns the current yield point name, or throws if none.
+        [[nodiscard]] constexpr int yield_pos_name() const noexcept
+        {
+            if (frame.pos == -1)
+                throw std::runtime_error("No active coroutine yield point.");
+            return yield_index_to_name<T>(frame.pos);
+        }
+
+        // Calls a function for each alive variable. Does nothing if the coroutine is not paused.
+        // `func` is `void func(auto index)`, where `index.value` is the constexpr variable index.
+        // Use `.var<i>()` and `rcoro::var_name<i>` to then manipulate the variables.
+        template <typename F>
+        constexpr void for_each_alive_var(F &&func) const
+        {
+            if (frame.pos == -1)
+                return;
+            detail::with_const_index<num_yields<T>>(frame.pos, [&](auto yieldindex)
+            {
+                constexpr auto indices = yield_vars<T, yieldindex.value>;
+                detail::const_for<indices.size()>([&](auto varindex)
+                {
+                    func(std::integral_constant<int, indices[varindex.value]>{});
+                });
+            });
+        }
+
+
+        // Debug info printer.
         template <typename A, typename B>
         friend std::basic_ostream<A, B> &operator<<(std::basic_ostream<A, B> &s, coro &c)
         {
@@ -853,11 +1008,11 @@ namespace rcoro
             }
             s << '\n';
 
-            s << "yield_pos = " << c.position();
-            if (c.position() != -1)
+            s << "yield_pos = " << c.yield_pos();
+            if (c.yield_pos() != -1)
             {
                 s << ", `";
-                detail::with_const_index<num_yields<T>>(c.position(), [&](auto yieldindex)
+                detail::with_const_index<num_yields<T>>(c.yield_pos(), [&](auto yieldindex)
                 {
                     s << yield_name<T, yieldindex.value>.view();
                 });
@@ -1041,9 +1196,9 @@ int main()
     // int std;
     auto x = RCORO(
         ::std::cout << 1 << '\n';
-        RC_YIELD();
+        RC_YIELD("2");
         ::std::cout << 2 << '\n';
-        RC_YIELD();
+        RC_YIELD("1");
         ::std::cout << 3 << '\n';
         {
             RC_VAR(unreachable, int) = 0;
@@ -1053,7 +1208,7 @@ int main()
         for (; i < 5; i++)
         {
             RC_VAR(j, char) = 'a';
-            RC_YIELD();
+            RC_YIELD("3");
             ::std::cout << i * 10 << '\n';
             RC_VAR(k, short) = 0;
             RC_VAR(l, int) = 0;
@@ -1063,26 +1218,44 @@ int main()
         }
     );
 
+    // using tag = decltype(x)::tag;
+    // std::cout << rcoro::yield_points_uniquely_named<tag> << '\n';
+
+
     // ::std::cout << "{{\n";
     // ::std::cout << x;
     // ::std::cout << "}}\n";
+    // x.for_each_alive_var([&](auto index)
+    // {
+    //     std::cout << rcoro::var_name<tag, index.value>.view() << ' ';
+    // });
+    std::cout << '\n';
 
-    // using tag = decltype(x)::tag;
 
     ::std::cout << "-\n";
     while (x.resume())
     {
-        if (x.var_exists<"i">() && x.var<"i">() == 2)
-            x.var<"i">() = 3;
+        // if (x.var_exists<"i">() && x.var<"i">() == 2)
+        //     x.var<"i">() = 3;
         std::cout << "---\n";
         // ::std::cout << "{{\n";
         // ::std::cout << x;
         // ::std::cout << "}}\n";
+        // x.for_each_alive_var([&](auto index)
+        // {
+        //     std::cout << rcoro::var_name<tag, index.value>.view() << ' ';
+        // });
+        std::cout << '\n';
     }
 
     // ::std::cout << "{{\n";
     // ::std::cout << x;
     // ::std::cout << "}}\n";
+    // x.for_each_alive_var([&](auto index)
+    // {
+    //     std::cout << rcoro::var_name<tag, index.value>.view() << ' ';
+    // });
+    std::cout << '\n';
 
     // std::cout << rcoro::debug_info<decltype(x)::tag> << '\n';
 }

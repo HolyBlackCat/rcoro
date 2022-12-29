@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <iosfwd>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -520,6 +523,46 @@ namespace rcoro
         {
             constexpr VarGuard(const Frame *) {}
         };
+
+        // Getting the type name as string:
+        template <typename T>
+        constexpr std::string_view raw_type_name()
+        {
+            #ifndef _MSC_VER
+            return __PRETTY_FUNCTION__;
+            #else
+            return __FUNCSIG__;
+            #endif
+        }
+        struct TypeNameFormat
+        {
+            std::size_t junk_leading = 0;
+            std::size_t junk_total = 0;
+        };
+        constexpr TypeNameFormat type_name_format = []{
+            TypeNameFormat ret;
+            std::string_view sample = raw_type_name<int>();
+            ret.junk_leading = sample.find("int");
+            ret.junk_total = sample.size() - 3;
+            return ret;
+        }();
+        template <typename T>
+        constexpr auto type_name_storage = []{
+            static_assert(type_name_format.junk_leading != std::size_t(-1), "Unable to determine the type name format on this compiler.");
+            std::array<char, raw_type_name<T>().size() - type_name_format.junk_total + 1> ret{};
+            std::copy_n(raw_type_name<T>().data() + type_name_format.junk_leading, ret.size() - 1, ret.data());
+            return ret;
+        }();
+        // Returns the type name, as a `std::string_view`. The string is null-terminated, but the terminator is not included in the view.
+        template <typename T>
+        [[nodiscard]] constexpr std::string_view type_name()
+        {
+            return {type_name_storage<T>.data(), type_name_storage<T>.size() - 1};
+        }
+
+        // Check if `a << b` compiles.
+        template <typename Target, typename Stream>
+        concept Printable = requires(Stream &s, const Target &t){s << t;};
     }
 
     // Whether `T` is a template argument of `coro<??>`.
@@ -585,7 +628,67 @@ namespace rcoro
     template <tag T, int A, int B>
     constexpr bool var_lifetime_overlaps_var = detail::VarVarReach<typename T::_rcoro_marker_t, A, B>::value;
 
+    // Print this into an `std::ostream` to get a debug information about a type.
+    template <tag T>
+    struct debug_info_t
+    {
+        template <typename A, typename B>
+        friend std::basic_ostream<A, B> &operator<<(std::basic_ostream<A, B> &s, debug_info_t)
+        {
+            s << "frame: size=" << frame_size<T> << " align=" << frame_alignment<T> << '\n';
 
+            s << num_vars<T> << " variable" << (num_vars<T> != 1 ? "s" : "") << ":\n";
+            detail::const_for<num_vars<T>>([&](auto varindex)
+            {
+                constexpr int i = varindex.value;
+                s << "  " << i << ". " << var_name<T, i>.view() << ", " << detail::type_name<var_type<T, i>>() << '\n';
+                s << "      offset=" << var_offset<T, i> << ", size=" << sizeof(var_type<T, i>) << ", align=" << alignof(var_type<T, i>) << '\n';
+
+                bool first = true;
+                detail::const_for<i>([&](auto sub_varindex)
+                {
+                    constexpr int j = sub_varindex.value;
+                    if constexpr (var_lifetime_overlaps_var<T, i, j>)
+                    {
+                        if (first)
+                        {
+                            first = false;
+                            s << "      visible_vars: ";
+                        }
+                        else
+                            s << ", ";
+                        s << j << "." << var_name<T, j>.view();
+                    }
+                });
+                if (!first)
+                    s << '\n';
+            });
+
+            s << num_yields<T> << " yield" << (num_yields<T> != 1 ? "s" : "") << ":\n";
+            detail::const_for<num_yields<T>>([&](auto yieldindex)
+            {
+                constexpr int i = yieldindex.value;
+                s << "  " << i << ". `" << yield_name<T, i>.view() << "`";
+                constexpr auto vars = yield_vars<T, i>;
+                detail::const_for<vars.size()>([&](auto varindex)
+                {
+                    constexpr int j = varindex.value;
+                    if (j == 0)
+                        s << ", visible_vars: ";
+                    else
+                        s << ", ";
+                    s << j << "." << var_name<T, j>.view();
+                });
+                s << '\n';
+            });
+
+            return s;
+        }
+    };
+    template <tag T>
+    constexpr debug_info_t<T> debug_info;
+
+    // The coroutine class.
     template <tag T>
     class coro
     {
@@ -624,9 +727,43 @@ namespace rcoro
         // Finished running because of an exception.
         [[nodiscard]] constexpr bool finished_with_exception() const noexcept {return frame.state == detail::State::finished_exception;}
 
+        // Returns the current yield point, or `-1` if none.
+        [[nodiscard]] constexpr int position() const noexcept {return frame.pos;}
+
+        // Returns true if the variable currently exists.
+        // Throws if the coroutine is currently running.
+        template <int V>
+        [[nodiscard]] constexpr bool var_exists() const
+        {
+            if (unfinished_executing())
+                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
+            if (!unfinished_paused())
+            {
+                RC_ASSERT(!frame.template var_exists<V>());
+                return false;
+            }
+            return frame.template var_exists<V>();
+        }
+
+        template <int V>
+        [[nodiscard]] constexpr var_type<T, V> &var()
+        {
+            if (unfinished_executing())
+                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
+            RC_ASSERT(!unfinished_paused() <=/*implies*/ !frame.template var_exists<V>());
+            if (!frame.template var_exists<V>())
+                throw std::runtime_error("The coroutine variable `" + std::string(var_name<T, V>.view()) + "` doesn't exist at this point.");
+            return frame.template var<V>();
+        }
+        template <int V>
+        [[nodiscard]] constexpr const var_type<T, V> &var() const
+        {
+            return const_cast<coro *>(this)->var<V>();
+        }
+
         // Runs a single step of the coroutine. Returns the new value of `unfinished()`.
         // Does nothing when applied to a not `unfinished()` coroutine.
-        bool resume()
+        constexpr bool resume()
         {
             frame.state = detail::State::executing;
 
@@ -638,7 +775,10 @@ namespace rcoro
                 ~Guard()
                 {
                     if (had_exception)
+                    {
                         self.frame.state = detail::State::finished_exception;
+                        self.frame.pos = -1;
+                    }
                 }
             };
             Guard guard{*this, had_exception};
@@ -650,8 +790,52 @@ namespace rcoro
             had_exception = false;
 
             if (frame.state == detail::State::executing)
+            {
                 frame.state = detail::State::finished_ok; // Otherwise it should be `State::paused`.
+                frame.pos = -1;
+            }
             return unfinished();
+        }
+
+        template <typename A, typename B>
+        friend std::basic_ostream<A, B> &operator<<(std::basic_ostream<A, B> &s, coro &c)
+        {
+            s << "state = ";
+            switch (c.frame.state)
+            {
+                case detail::State::null:               s << "null";               break;
+                case detail::State::executing:          s << "executing";          break;
+                case detail::State::paused:             s << "paused";             break;
+                case detail::State::finished_ok:        s << "finished_ok";        break;
+                case detail::State::finished_exception: s << "finished_exception"; break;
+            }
+            s << '\n';
+
+            s << "yield_pos = " << c.position();
+            if (c.position() != -1)
+            {
+                s << ", `";
+                detail::with_const_index<num_yields<T>>(c.position(), [&](auto yieldindex)
+                {
+                    s << yield_name<T, yieldindex.value>.view();
+                });
+                s << "`";
+            }
+            s << '\n';
+
+            detail::const_for<num_vars<T>>([&](auto varindex)
+            {
+                constexpr int i = varindex.value;
+                s << "  " << i << ". " << var_name<T, i>.view() << " - " << (c.var_exists<i>() ? "alive" : "dead");
+                if constexpr (detail::Printable<var_type<T, i>, std::basic_ostream<A, B>>)
+                {
+                    if (c.var_exists<i>())
+                        s << ", " << c.var<i>();
+                }
+                s << '\n';
+            });
+
+            return s;
         }
     };
 }
@@ -812,6 +996,7 @@ std::string_view type_name()
 
 int main()
 {
+    // * Fix state manipulations to prevent a single thread from abusing coroutines.
     // * Tests (lifetime, exception recovery, rule-of-five)
     // * Reflected variables.
     // * Passing parameters.
@@ -834,7 +1019,7 @@ int main()
         RC_VAR(i, int) = 0;
         for (; i < 5; i++)
         {
-            RC_VAR(j, char) = 0;
+            RC_VAR(j, char) = 'a';
             RC_YIELD();
             ::std::cout << i * 10 << '\n';
             RC_VAR(k, short) = 0;
@@ -845,80 +1030,21 @@ int main()
         }
     );
 
-    x.resume();
-    x.resume();
-    x.resume();
-    x.resume();
-    auto y = x;
+    ::std::cout << "{{\n";
+    ::std::cout << x;
+    ::std::cout << "}}\n";
 
     ::std::cout << "-\n";
     while (x.resume())
     {
-        ::std::cout << "---\n";
+        ::std::cout << "{{\n";
+        ::std::cout << x;
+        ::std::cout << "}}\n";
     }
 
-    x = std::move(y);
+    ::std::cout << "{{\n";
+    ::std::cout << x;
+    ::std::cout << "}}\n";
 
-    ::std::cout << "####\n";
-    while (x.resume())
-    {
-        ::std::cout << "---\n";
-    }
-
-    #if 0
-    using tag = decltype(x)::tag;
-
-    ::std::cout << "frame_size = " << rcoro::frame_size<tag> << '\n';
-    ::std::cout << "frame_alignment = " << rcoro::frame_alignment<tag> << '\n';
-    ::std::cout << "num_vars = " << rcoro::num_vars<tag> << '\n';
-    []<::std::size_t ...I>(::std::index_sequence<I...>){
-        ([]{
-            ::std::cout << " " << I << ". " << rcoro::var_name<tag, I>.view() << ", " << type_name<rcoro::var_type<tag, I>>() << '\n';
-            ::std::cout << "    offset=" << rcoro::var_offset<tag, I> << ", size=" << sizeof(rcoro::var_type<tag, I>) << ", align=" << alignof(rcoro::var_type<tag, I>) << '\n';
-            constexpr auto i = I;
-            []<::std::size_t ...J>(::std::index_sequence<J...>){
-                bool first = true;
-                ([&]{
-                    if constexpr (rcoro::var_lifetime_overlaps_var<tag, i, J>)
-                    {
-                        if (first)
-                        {
-                            first = false;
-                            ::std::cout << "    overlaps: ";
-                        }
-                        else
-                            ::std::cout << ", ";
-                        ::std::cout << J << "." << rcoro::var_name<tag, J>.view();
-                    }
-                }(), ...);
-                if (!first)
-                    ::std::cout << '\n';
-            }(::std::make_index_sequence<i>{});
-            ::std::cout << '\n';
-        }(), ...);
-    }(::std::make_index_sequence<rcoro::num_vars<tag>>{});
-
-    ::std::cout << "num_yields = " << rcoro::num_yields<tag> << '\n';
-    []<::std::size_t ...I>(::std::index_sequence<I...>){
-        ([]{
-            ::std::cout << " " << I << ". " << ::std::quoted(rcoro::yield_name<tag, I>.view());
-            constexpr int i = I;
-            []<::std::size_t ...J>(::std::index_sequence<J...>){
-                bool first = true;
-                ([&]{
-                    if (first)
-                    {
-                        first = false;
-                        ::std::cout << " overlaps: ";
-                    }
-                    else
-                        ::std::cout << ", ";
-                    constexpr int index = rcoro::yield_vars<tag, i>[J];
-                    ::std::cout << index << "." << rcoro::var_name<tag, index>.view();
-                }(), ...);
-            }(::std::make_index_sequence<rcoro::yield_vars<tag, I>.size()>{});
-            ::std::cout << '\n';
-        }(), ...);
-    }(::std::make_index_sequence<rcoro::num_yields<tag>>{});
-    #endif
+    std::cout << rcoro::debug_info<decltype(x)::tag> << '\n';
 }

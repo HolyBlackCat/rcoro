@@ -985,15 +985,6 @@ namespace rcoro
 #include <iostream>
 #include <iomanip>
 
-template <typename T>
-std::string_view type_name()
-{
-    std::string_view ret(__PRETTY_FUNCTION__);
-    ret.remove_prefix(34);
-    ret.remove_suffix(1);
-    return ret;
-}
-
 int main()
 {
     // * Fix state manipulations to prevent a single thread from abusing coroutines.

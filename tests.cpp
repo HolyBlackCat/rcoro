@@ -72,9 +72,6 @@ namespace rcoro
             #endif
         }
 
-        // Used internally when constructing a coroutine wrapper.
-        struct ConstructCoroTag {explicit ConstructCoroTag() = default;};
-
         // Coroutine state.
         enum class State
         {
@@ -110,6 +107,13 @@ namespace rcoro
         {
             [&]<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
                 (void(func(std::integral_constant<decltype(N), N-I-1>{})), ...);
+            }(std::make_integer_sequence<decltype(N), N>{});
+        }
+        template <auto N, typename F>
+        constexpr bool const_any_of(F &&func)
+        {
+            return [&]<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
+                return (func(std::integral_constant<decltype(N), I>{}) || ...);
             }(std::make_integer_sequence<decltype(N), N>{});
         }
 
@@ -372,44 +376,51 @@ namespace rcoro
 
             // A helper for `handle_vars()`.
             // Can't define it inside of that function because of Clang bug: https://github.com/llvm/llvm-project/issues/59734
-            template <typename F, int N>
+            template <typename F, int Y>
             struct HandleVarsGuard
             {
                 F &rollback;
-                int i = 0;
+                std::size_t i = 0;
                 bool failed = true;
                 ~HandleVarsGuard()
                 {
-                    const_reverse_for<N>([&](auto var)
+                    if (!failed)
+                        return;
+
+                    constexpr auto indices = vars_reachable_from_yield<T, Y>();
+                    const_reverse_for<indices.size()>([&](auto var)
                     {
                         if (var.value < i)
-                            rollback(var);
+                            rollback(std::integral_constant<int, indices[var.value]>{});
                     });
                 }
             };
 
-            // Both `func` and `rollback` are `void func(auto index)`, where `index` is `std::integer_constant<int, I>`.
+            // `func` is `bool func(auto index)`, `rollback` is `void rollback(auto index)`, where `index` is `std::integral_constant<int, I>`.
             // `func` is called for every variable index for yield point `pos`.
-            // If it throws, `rollback` is called for every index processed so far, in reverse.
+            // If it throws or returns true, `rollback` is called for every index processed so far, in reverse.
+            // If `func` returned true, the whole function also returns true.
             template <typename F, typename G>
-            static constexpr void handle_vars(int pos, F &&func, G &&rollback)
+            static constexpr bool handle_vars(int pos, F &&func, G &&rollback)
             {
                 if (pos == -1)
-                    return;
+                    return false;
+                bool ret = false;
                 with_const_index<NumYields<T>::value>(pos, [&](auto yield)
                 {
                     constexpr auto indices = vars_reachable_from_yield<T, yield.value>();
 
-                    HandleVarsGuard<G, indices.size()> guard{.rollback = rollback};
+                    HandleVarsGuard<G, yield.value> guard{.rollback = rollback};
 
-                    const_for<indices.size()>([&](auto var)
+                    bool fail = const_any_of<indices.size()>([&](auto var)
                     {
-                        func(var);
+                        bool stop = func(std::integral_constant<int, indices[var.value]>{});
                         guard.i++;
+                        return stop;
                     });
-
-                    guard.failed = false;
+                    ret = guard.failed = fail;
                 });
+                return ret;
             }
 
             constexpr Frame() {}
@@ -548,7 +559,7 @@ namespace rcoro
             const_for<NumYields<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
-                ret[i].first = YieldDescFor<T, i>::name.view();
+                ret[i].first = YieldDescFor<T, i>::value.view();
                 ret[i].second = i;
             });
             std::sort(ret.begin(), ret.end());
@@ -848,12 +859,6 @@ namespace rcoro
 
         constexpr coro() {}
 
-        constexpr coro(detail::ConstructCoroTag)
-        {
-            resume();
-        }
-
-
         // Examining coroutine state:
 
         // Each coroutine can be in one of three states:
@@ -880,7 +885,7 @@ namespace rcoro
         [[nodiscard]] constexpr bool finished_with_exception() const noexcept {return frame.state == detail::State::finished_exception;}
 
 
-        // Resuming the coroutine:
+        // Manipulating the coroutine:
 
         // Runs a single step of the coroutine. Returns the new value of `unfinished()`.
         // Does nothing when applied to a not `unfinished()` coroutine.
@@ -916,6 +921,12 @@ namespace rcoro
                 frame.pos = -1;
             }
             return unfinished();
+        }
+
+        // Zeroes the coroutine, destroying all variables.
+        constexpr void reset() noexcept
+        {
+            frame.reset();
         }
 
 
@@ -962,7 +973,7 @@ namespace rcoro
         template <const_string Name> [[nodiscard]] constexpr const var_type<T, var_index<T, Name>> &var() const {return var<var_index<T, Name>>();}
 
 
-        // Serialization/deserialization:
+        // Serialization:
 
         // Returns the current yield point, or `-1` if none.
         [[nodiscard]] constexpr int yield_pos() const noexcept {return frame.pos;}
@@ -990,6 +1001,45 @@ namespace rcoro
                     func(std::integral_constant<int, indices[varindex.value]>{});
                 });
             });
+        }
+
+
+        // Deserialization:
+
+        // Moves the coroutine to a specific yield point. Throws if the yield point index is out of range.
+        // `func` is then called for every variable existing at that yield point.
+        // `func` is `void func(auto index, auto construct)`, where `index` is the variable index in form of `std::integral_constant<int, N>`,
+        // and `construct` is `void construct(auto &&...)`. `construct` must be called at most once to construct the variable. Throws if it's called more than once.
+        // If `construct` is not called, will abort the load, destroy the previously constructed variables, and return false.
+        // If the function ends up throwing or returning false, the coroutine is zeroed as if by `reset()`.
+        template <typename F>
+        constexpr bool load(int yield_index, F &&func)
+        {
+            reset();
+            if (yield_index < 0 || yield_index >= num_yields<T>)
+                throw std::runtime_error("Coroutine yield point index is out of range.");
+            bool fail = frame.handle_vars(
+                yield_index,
+                [&](auto varindex)
+                {
+                    bool ok = false;
+                    func(varindex, [&]<typename ...P>(P &&... params)
+                    {
+                        if (ok)
+                            throw std::runtime_error("Coroutine `load()` user callback must call the callback it receives at most once.");
+                        std::construct_at(frame.template var_storage<varindex.value>(), std::forward<P>(params)...);
+                        ok = true;
+                    });
+                    return !ok;
+                },
+                [&](auto varindex) noexcept
+                {
+                    std::destroy_at(&frame.template var<varindex.value>());
+                }
+            );
+            if (!fail)
+                frame.pos = yield_index;
+            return !fail;
         }
 
 
@@ -1075,7 +1125,7 @@ namespace rcoro
             using _rcoro_frame_t = ::rcoro::detail::Frame<false, _rcoro_Marker>; \
             using _rcoro_lambda_t = decltype(_rcoro_lambda); \
         }; \
-        return ::rcoro::coro<_rcoro_Types>(::rcoro::detail::ConstructCoroTag{}); \
+        return ::rcoro::coro<_rcoro_Types>(); \
     }()
 
 #define DETAIL_RCORO_IDENTITY(...) __VA_ARGS__
@@ -1184,7 +1234,10 @@ namespace rcoro
 
 int main()
 {
+    // * Null coros can be started - think about it.
+    // * Deserialization from string.
     // * Fix state manipulations to prevent a single thread from abusing coroutines.
+    // * Init syntax that accepts only a value, not a type (and a fallback macro for a type).
     // * Tests (lifetime, exception recovery, rule-of-five)
     // * Passing parameters.
     // * Serialization-deserialization tests.
@@ -1218,7 +1271,20 @@ int main()
         }
     );
 
-    // using tag = decltype(x)::tag;
+    using tag = decltype(x)::tag;
+
+    std::string yield;
+    std::cin >> yield;
+    bool ok = x.load(rcoro::yield_name_to_index<tag>(yield), [](auto index, auto construct)
+    {
+        std::cout << rcoro::var_name<tag, index.value>.view() << ": ";
+        rcoro::var_type<tag, index.value> var;
+        std::cin >> var;
+        if (var)
+            construct(var);
+    });
+    std::cout << "ok=" << ok << '\n';
+
     // std::cout << rcoro::yield_points_uniquely_named<tag> << '\n';
 
 
@@ -1229,8 +1295,7 @@ int main()
     // {
     //     std::cout << rcoro::var_name<tag, index.value>.view() << ' ';
     // });
-    std::cout << '\n';
-
+    // std::cout << '\n';
 
     ::std::cout << "-\n";
     while (x.resume())
@@ -1245,7 +1310,7 @@ int main()
         // {
         //     std::cout << rcoro::var_name<tag, index.value>.view() << ' ';
         // });
-        std::cout << '\n';
+        // std::cout << '\n';
     }
 
     // ::std::cout << "{{\n";
@@ -1255,7 +1320,7 @@ int main()
     // {
     //     std::cout << rcoro::var_name<tag, index.value>.view() << ' ';
     // });
-    std::cout << '\n';
+    // std::cout << '\n';
 
     // std::cout << rcoro::debug_info<decltype(x)::tag> << '\n';
 }

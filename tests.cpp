@@ -19,15 +19,6 @@
 #define RC_ASSERT(expr) assert(expr)
 #endif
 
-// Wraps `[[no_unique_address]]`.
-#ifndef RC_NO_UNIQUE_ADDRESS
-#ifdef _MSC_VER
-#define RC_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]] // Dang it, MSVC.
-#else
-#define RC_NO_UNIQUE_ADDRESS [[no_unique_address]]
-#endif
-#endif
-
 #ifndef RC_RESTRICT
 #define RC_RESTRICT __restrict // There's also `__restrict__`, but that doesn't work on MSVC.
 #endif
@@ -82,14 +73,6 @@ namespace rcoro
             finished_exception,
         };
 
-        // Has no-op assignment, templated for any type.
-        struct Sink
-        {
-            constexpr Sink() {}
-            template <typename T>
-            constexpr void operator=(T &&) {}
-        };
-
         // Wraps a value into a type.
         template <auto N>
         struct ValueTag {static constexpr auto value = N;};
@@ -135,6 +118,10 @@ namespace rcoro
         // A type list.
         template <typename ...P>
         struct TypeList {static constexpr int size = sizeof...(P);};
+        // A helper that strips the leading `void,` from a list. This simplifies the macros.
+        template <typename Void, typename ...P> requires std::is_same_v<Void, void>
+        using TypeListSkipVoid = TypeList<P...>;
+        // Get `N`th type in the list.
         template <int N, typename T>
         struct TypeAt {};
         template <int N, typename P0, typename ...P>
@@ -144,26 +131,34 @@ namespace rcoro
 
         // Returns the number of variables in a coroutine.
         template <typename T>
-        struct NumVars : std::integral_constant<int, T::_rcoro_vars::size - 1> {};
-        // Describes a single variable in a coroutine.
-        template <typename T, const_string Name>
-        struct VarDesc
-        {
-            using type = T;
-            static constexpr const_string name = Name;
-        };
-        // Returns description for a single variable.
-        // Note offsetting the index by one. We need it because the 0th description is `void`, to simplify the macros.
-        template <typename T, int N> requires(N >= 0)
-        using VarDescFor = typename TypeAt<N + 1, typename T::_rcoro_vars>::type;
+        struct NumVars : std::integral_constant<int, T::_rcoro_vars::size> {};
+        // Returns the name of a single variable. `::value` is a `const_strict`.
+        template <typename T, int N>
+        using VarName = typename TypeAt<N, typename T::_rcoro_vars>::type;
 
         // Returns the number of yield points in a coroutine.
         template <typename T>
-        struct NumYields : std::integral_constant<int, T::_rcoro_yields::size - 1> {};
-        // Returns description for a single yield point.
-        // Note offsetting the index by one. We need it because the 0th description is `void`, to simplify the macros.
-        template <typename T, int N> requires(N >= 0)
-        using YieldDescFor = typename TypeAt<N + 1, typename T::_rcoro_yields>::type;
+        struct NumYields : std::integral_constant<int, T::_rcoro_yields::size> {};
+        // Returns the name of a single yield point. `::value` is a `const_strict`.
+        template <typename T, int N>
+        using YieldName = typename TypeAt<N, typename T::_rcoro_yields>::type;
+
+        // Stateful trick to store variable types.
+        template <typename T, int N>
+        struct VarTypeReader
+        {
+            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<T, N>);
+        };
+        template <typename T, int N, typename U>
+        struct VarTypeWriter
+        {
+            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<T, N>) {return (U *)nullptr;}
+        };
+        constexpr void _adl_detail_rcoro_var_type() {} // Dummy ADL target.
+        template <typename T, int N>
+        using VarType = std::remove_pointer_t<decltype(_adl_detail_rcoro_var_type(VarTypeReader<T, N>{}))>;
+
+
 
         // Stateful trick to store var-to-var overlap data.
         template <typename T, int N>
@@ -246,20 +241,20 @@ namespace rcoro
         struct VarOffsetWriterAuto<true, T, N, M> : VarOffsetWriter<T, N,
             (
                 VarOffset<T, M-1>::value
-                + sizeof(typename VarDescFor<T, M-1>::type)
+                + sizeof(VarType<T, M-1>)
                 // Prepare to divide, rounding up.
-                + alignof(typename VarDescFor<T, M>::type)
+                + alignof(VarType<T, M>)
                 - 1
             )
-            / alignof(typename VarDescFor<T, M>::type)
-            * alignof(typename VarDescFor<T, M>::type)>
+            / alignof(VarType<T, M>)
+            * alignof(VarType<T, M>)>
         {};
 
         // The stack frame alignment.
         template <typename T>
-        struct FrameAlignment : std::integral_constant<std::size_t, []<typename Void, typename ...P>(TypeList<Void, P...>) {
-            return std::max({alignof(char), alignof(typename P::type)...});
-        }(typename T::_rcoro_vars{})> {};
+        struct FrameAlignment : std::integral_constant<std::size_t, []<int ...I>(std::integer_sequence<int, I...>) {
+            return std::max({alignof(char), alignof(VarType<T, I>)...});
+        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         // The stack frame size.
         template <typename T>
         struct FrameSize : std::integral_constant<std::size_t, 0> {};
@@ -267,7 +262,7 @@ namespace rcoro
         struct FrameSize<T> : std::integral_constant<std::size_t,
             (
                 VarOffset<T, NumVars<T>::value - 1>::value
-                + sizeof(typename VarDescFor<T, NumVars<T>::value - 1>::type)
+                + sizeof(VarType<T, NumVars<T>::value - 1>)
                 // Prepare to divide, rounding up.
                 + FrameAlignment<T>::value
                 - 1
@@ -278,11 +273,11 @@ namespace rcoro
 
         // Inspect noexcept-ness of coroutine variables.
         template <typename T>
-        struct FrameIsNothrowCopyConstructible : std::integral_constant<std::size_t, []<typename Void, typename ...P>(TypeList<Void, P...>) {
+        struct FrameIsNothrowCopyConstructible : std::integral_constant<std::size_t, []<typename ...P>(TypeList<P...>) {
             return (std::is_nothrow_copy_constructible_v<typename P::type> && ...);
         }(typename T::_rcoro_vars{})> {};
         template <typename T>
-        struct FrameIsNothrowCopyOrMoveConstructible : std::integral_constant<std::size_t, []<typename Void, typename ...P>(TypeList<Void, P...>) {
+        struct FrameIsNothrowCopyOrMoveConstructible : std::integral_constant<std::size_t, []<typename ...P>(TypeList<P...>) {
             return ((std::is_nothrow_copy_constructible_v<typename P::type> || std::is_nothrow_move_constructible_v<typename P::type>) && ...);
         }(typename T::_rcoro_vars{})> {};
 
@@ -308,10 +303,12 @@ namespace rcoro
             constexpr const char *storage() const {return nullptr;}
         };
 
+        // Stores the coroutine state, including the stack frame.
         template <bool Fake, typename T>
         struct Frame : FrameBase<T>
         {
             static constexpr bool fake = Fake;
+            using marker_t = T;
 
             // The state enum.
             State state = State::null;
@@ -334,24 +331,24 @@ namespace rcoro
             }
 
             // Get `V`th variable storage. Not laundered, so don't dereference.
-            template <int V> constexpr       typename VarDescFor<T, V>::type *var_storage()       {return reinterpret_cast<      typename VarDescFor<T, V>::type *>(this->storage() + VarOffset<T, V>::value);}
-            template <int V> constexpr const typename VarDescFor<T, V>::type *var_storage() const {return reinterpret_cast<const typename VarDescFor<T, V>::type *>(this->storage() + VarOffset<T, V>::value);}
+            template <int V> constexpr       VarType<T, V> *var_storage()       {return reinterpret_cast<      VarType<T, V> *>(this->storage() + VarOffset<T, V>::value);}
+            template <int V> constexpr const VarType<T, V> *var_storage() const {return reinterpret_cast<const VarType<T, V> *>(this->storage() + VarOffset<T, V>::value);}
 
             // Get `V`th variable. UB if it doesn't exist.
-            template <int V> constexpr       typename VarDescFor<T, V>::type &var()       {return *std::launder(var_storage<V>());}
-            template <int V> constexpr const typename VarDescFor<T, V>::type &var() const {return *std::launder(var_storage<V>());}
+            template <int V> constexpr       VarType<T, V> &var()       {return *std::launder(var_storage<V>());}
+            template <int V> constexpr const VarType<T, V> &var() const {return *std::launder(var_storage<V>());}
 
             // Get `V`th variable. An invalid reference if it doesn't exist and if `assume_good` is false.
             template <int V>
-            constexpr typename VarDescFor<T, V>::type &var_or_bad_ref(bool assume_good)
+            constexpr VarType<T, V> &var_or_bad_ref(bool assume_good)
             {
                 if (assume_good || var_exists<V>())
                     return var<V>();
                 else
-                    return bad_ref<typename VarDescFor<T, V>::type>();
+                    return bad_ref<VarType<T, V>>();
             }
             template <int V>
-            constexpr const typename VarDescFor<T, V>::type &var_or_bad_ref() const
+            constexpr const VarType<T, V> &var_or_bad_ref() const
             {
                 return const_cast<Frame *>(this)->var_or_bad_ref();
             }
@@ -366,7 +363,7 @@ namespace rcoro
                     constexpr auto indices = vars_reachable_from_yield<T, yieldindex.value>();
                     const_reverse_for<indices.size()>([&](auto varindex)
                     {
-                        using type = typename VarDescFor<T, varindex.value>::type;
+                        using type = VarType<T, varindex.value>;
                         var<varindex.value>().type::~type();
                     });
                 });
@@ -498,19 +495,21 @@ namespace rcoro
         struct Frame<true, T>
         {
             static constexpr bool fake = true;
+            using marker_t = T;
+
             State state = State::null;
             int pos = -1;
 
             template <int V>
-            constexpr typename VarDescFor<T, V>::type &var()
+            constexpr VarType<T, V> &var()
             {
-                return bad_ref<typename VarDescFor<T, V>::type>();
+                return bad_ref<VarType<T, V>>();
             }
             template <int V>
-            constexpr typename VarDescFor<T, V>::type &var_or_bad_ref(bool assume_good)
+            constexpr VarType<T, V> &var_or_bad_ref(bool assume_good)
             {
                 (void)assume_good;
-                return bad_ref<typename VarDescFor<T, V>::type>();
+                return bad_ref<VarType<T, V>>();
             }
         };
 
@@ -520,10 +519,11 @@ namespace rcoro
         {
             const Frame *frame;
 
-            constexpr VarGuard(const Frame *frame) : frame(frame)
+            template <typename T>
+            constexpr VarGuard(const Frame *frame, T &&init) : frame(frame)
             {
                 if (frame)
-                    std::construct_at(frame->template var_storage<I>());
+                    std::construct_at(frame->template var_storage<I>(), std::forward<T>(init));
             }
             VarGuard(const VarGuard &) = delete;
             VarGuard &operator=(const VarGuard &) = delete;
@@ -536,7 +536,12 @@ namespace rcoro
         template <typename Frame, int I> requires(Frame::fake)
         struct VarGuard<Frame, I>
         {
-            constexpr VarGuard(const Frame *) {}
+            // This saves the variable type to a stateful storage.
+            template <typename T>
+            constexpr VarGuard(const Frame *, T &&)
+            {
+                (void)VarTypeWriter<typename Frame::marker_t, I, std::decay_t<T>>{};
+            }
         };
 
         // An array of pairs, mapping variable names to their indices.
@@ -546,7 +551,7 @@ namespace rcoro
             const_for<NumVars<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
-                ret[i].first = VarDescFor<T, i>::name.view();
+                ret[i].first = VarName<T, i>::value.view();
                 ret[i].second = i;
             });
             std::sort(ret.begin(), ret.end());
@@ -559,7 +564,7 @@ namespace rcoro
             const_for<NumYields<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
-                ret[i].first = YieldDescFor<T, i>::value.view();
+                ret[i].first = YieldName<T, i>::value.view();
                 ret[i].second = i;
             });
             std::sort(ret.begin(), ret.end());
@@ -626,11 +631,11 @@ namespace rcoro
 
     // The name of a coroutine variable `V`.
     template <tag T, int V>
-    constexpr const_string var_name = detail::VarDescFor<typename T::_rcoro_marker_t, V>::name;
+    constexpr const_string var_name = detail::VarName<typename T::_rcoro_marker_t, V>::value;
 
     // The type of a coroutine variable `V`.
     template <tag T, int V>
-    using var_type = typename detail::VarDescFor<typename T::_rcoro_marker_t, V>::type;
+    using var_type = typename detail::VarType<typename T::_rcoro_marker_t, V>::type;
 
     // Variable name helpers:
 
@@ -688,7 +693,7 @@ namespace rcoro
 
     // The name of a yield point.
     template <tag T, int Y>
-    constexpr const_string yield_name = detail::YieldDescFor<typename T::_rcoro_marker_t, Y>::value;
+    constexpr const_string yield_name = detail::YieldName<typename T::_rcoro_marker_t, Y>::value;
 
     // Whether variable `V` exists at yield point `Y`.
     template <tag T, int V, int Y>
@@ -1088,8 +1093,8 @@ namespace rcoro
 }
 
 // Declare a coroutine-friendly variable.
-// Usage: `RC_VAR(name, type);` or `VAR(name, type) = init;` or `VAR(name, type)(init...);`.
-#define RC_VAR(name, .../*type*/) )(var,name,__VA_ARGS__)(code,
+// Usage: `RC_VAR(name, init);`. The type is deduced from the initializer.
+#define RC_VAR(name, .../*init*/) )(var,name,__VA_ARGS__)(code,
 // Pause a coroutine. `ident` is a unique identifier for this yield point.
 #define RC_YIELD(name) )(yield,name)(code,
 #define RCORO(...) \
@@ -1098,9 +1103,9 @@ namespace rcoro
         struct _rcoro_Marker \
         { \
             /* The variable descriptions. */\
-            using _rcoro_vars [[maybe_unused]] = ::rcoro::detail::TypeList<void SF_FOR_EACH(DETAIL_RCORO_VARDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
+            using _rcoro_vars [[maybe_unused]] = ::rcoro::detail::TypeListSkipVoid<void SF_FOR_EACH(DETAIL_RCORO_VARDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
             /* The yield point descriptions. */\
-            using _rcoro_yields [[maybe_unused]] = ::rcoro::detail::TypeList<void SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
+            using _rcoro_yields [[maybe_unused]] = ::rcoro::detail::TypeListSkipVoid<void SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
         }; \
         /* Fallback marker variables, used when checking reachibility from yield points. */\
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
@@ -1159,13 +1164,9 @@ namespace rcoro
     /* The rcorond variable also serves as a scope checker for yields. */\
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))) = true; \
     [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
-    /* Analyze lifetime overlap with other variables. */\
-    (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
-    /* Determine the stack frame offset for this variable. */\
-    (void)::rcoro::detail::VarOffsetWriterAuto<_rcoro_frame_t::fake, _rcoro_Marker, varindex>{}; \
   SF_CAT(_rcoro_label_, ident): \
     /* If we're not jumping, initialize the variable. */\
-    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == -1 ? &_rcoro_frame : nullptr); \
+    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == -1 ? &_rcoro_frame : nullptr, __VA_ARGS__); \
     /* Create a reference as a fancy name for our storage variable. */\
     auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == -1); \
     /* Jump to the next macro, if necessary. */\
@@ -1174,10 +1175,11 @@ namespace rcoro
         /* Jump to the next location. */\
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
     } \
-    /* Construct the variable. */\
-    /* Prepare for a possible assignment following this macro. */\
-    /* Note that we don't directly use `name` here, to avoid silencing the "unused variable" warning. */\
-    ::rcoro::detail::Sink{} = _rcoro_frame.template var<varindex>()
+    /* Stateful meta magic: */\
+    /* Analyze lifetime overlap with other variables. */\
+    (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
+    /* Determine the stack frame offset for this variable. */\
+    (void)::rcoro::detail::VarOffsetWriterAuto<_rcoro_frame_t::fake, _rcoro_Marker, varindex>{};
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) \
     do \
     { \
@@ -1213,7 +1215,7 @@ namespace rcoro
 // The loop body to generate variable descriptions for reflection.
 #define DETAIL_RCORO_VARDESC_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_VARDESC_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
-#define DETAIL_RCORO_VARDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::VarDesc<__VA_ARGS__, #name>
+#define DETAIL_RCORO_VARDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, ...)
 
 // The loop body to generate yield point descriptions for reflection.
@@ -1255,36 +1257,36 @@ int main()
         RC_YIELD("1");
         ::std::cout << 3 << '\n';
         {
-            RC_VAR(unreachable, int) = 0;
+            RC_VAR(unreachable, 0);
             (void)unreachable;
         }
-        RC_VAR(i, int) = 0;
+        RC_VAR(i, 0);
         for (; i < 5; i++)
         {
-            RC_VAR(j, char) = 'a';
+            RC_VAR(j, 'a');
             RC_YIELD("3");
             ::std::cout << i * 10 << '\n';
-            RC_VAR(k, short) = 0;
-            RC_VAR(l, int) = 0;
+            RC_VAR(k, short{});
+            RC_VAR(l, int{});
             (void)j;
             (void)k;
             (void)l;
         }
     );
 
-    using tag = decltype(x)::tag;
+    // using tag = decltype(x)::tag;
 
-    std::string yield;
-    std::cin >> yield;
-    bool ok = x.load(rcoro::yield_name_to_index<tag>(yield), [](auto index, auto construct)
-    {
-        std::cout << rcoro::var_name<tag, index.value>.view() << ": ";
-        rcoro::var_type<tag, index.value> var;
-        std::cin >> var;
-        if (var)
-            construct(var);
-    });
-    std::cout << "ok=" << ok << '\n';
+    // std::string yield;
+    // std::cin >> yield;
+    // bool ok = x.load(rcoro::yield_name_to_index<tag>(yield), [](auto index, auto construct)
+    // {
+    //     std::cout << rcoro::var_name<tag, index.value>.view() << ": ";
+    //     rcoro::var_type<tag, index.value> var;
+    //     std::cin >> var;
+    //     if (var)
+    //         construct(var);
+    // });
+    // std::cout << "ok=" << ok << '\n';
 
     // std::cout << rcoro::yield_points_uniquely_named<tag> << '\n';
 

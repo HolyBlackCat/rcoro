@@ -1236,6 +1236,7 @@ int main()
 {
     // * Null coros can be started - think about it.
     // * Deserialization from string.
+    // *`RC_WITH_VAR()` that limits the variable scope to the next statement. This requires stacking a bunch of `if`s.
     // * Fix state manipulations to prevent a single thread from abusing coroutines.
     // * Init syntax that accepts only a value, not a type (and a fallback macro for a type).
     // * Tests (lifetime, exception recovery, rule-of-five)

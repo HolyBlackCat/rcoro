@@ -1,6 +1,5 @@
-/compile_commands.json
-/bin
-/obj
-/local_config.mk
 /.cache
+/.last_version
 /.vscode/launch.json
+/compile_commands.json
+/tests

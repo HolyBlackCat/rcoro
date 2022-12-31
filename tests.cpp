@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <exception>
 #include <iosfwd>
 #include <iterator>
 #include <memory>
@@ -19,6 +20,12 @@
 #define RC_ASSERT(expr) assert(expr)
 #endif
 
+// Aborts the program.
+#ifndef RC_ABORT
+#define RC_ABORT(text) do {assert(false && text); std::terminate();} while(false)
+#endif
+
+// 'Restrict' qualifier.
 #ifndef RC_RESTRICT
 #define RC_RESTRICT __restrict // There's also `__restrict__`, but that doesn't work on MSVC.
 #endif
@@ -286,7 +293,15 @@ namespace rcoro
             * FrameAlignment<T>::value>
         {};
 
-        // Inspect noexcept-ness of coroutine variables.
+        // Inspect copyability of coroutine variables.
+        template <typename T>
+        struct FrameIsCopyConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
+            return (std::is_copy_constructible_v<VarType<T, I>> && ...);
+        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        template <typename T>
+        struct FrameIsMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
+            return (std::is_move_constructible_v<VarType<T, I>> && ...);
+        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
         struct FrameIsNothrowCopyConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_nothrow_copy_constructible_v<VarType<T, I>> && ...);
@@ -377,6 +392,8 @@ namespace rcoro
             // Cleans the frame.
             void reset() noexcept
             {
+                if (state >= State::_busy)
+                    RC_ABORT("Can't reset a busy coroutine.");
                 state = State::none;
                 if (pos == -1)
                     return;
@@ -385,8 +402,7 @@ namespace rcoro
                     constexpr auto indices = vars_reachable_from_yield<T, yieldindex.value>();
                     const_reverse_for<indices.size()>([&](auto varindex)
                     {
-                        using type = VarType<T, varindex.value>;
-                        var<varindex.value>().type::~type();
+                        std::destroy_at(&var<varindex.value>());
                     });
                 });
                 pos = -1;
@@ -443,19 +459,21 @@ namespace rcoro
 
             constexpr Frame() {}
 
-            constexpr Frame(const Frame &other) noexcept(FrameIsNothrowCopyConstructible<T>::value)
+            constexpr Frame(const Frame &other) noexcept(FrameIsNothrowCopyConstructible<T>::value) requires FrameIsCopyConstructible<T>::value
             {
                 *this = other;
             }
-            constexpr Frame(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value)
+            constexpr Frame(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
             {
                 *this = std::move(other);
             }
             // If the assignment throws, the target will be zeroed.
-            constexpr Frame &operator=(const Frame &other) noexcept(FrameIsNothrowCopyConstructible<T>::value)
+            constexpr Frame &operator=(const Frame &other) noexcept(FrameIsNothrowCopyConstructible<T>::value) requires FrameIsCopyConstructible<T>::value
             {
                 if (&other == this)
                     return *this;
+                if (state >= State::_busy || other.state >= State::_busy)
+                    RC_ABORT("Can't copy a busy coroutine.");
                 reset();
                 handle_vars(other.pos,
                     [&](auto index)
@@ -474,11 +492,14 @@ namespace rcoro
                 state = other.state;
                 return *this;
             }
-            // If the assignment throws, the target will be zeroed.
-            constexpr Frame &operator=(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value)
+            // If the assignment throws, the target will be zeroed. The source is zeroed in any case.
+            constexpr Frame &operator=(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
             {
                 if (&other == this)
                     return *this;
+                if (state >= State::_busy || other.state >= State::_busy)
+                    RC_ABORT("Can't move a busy coroutine.");
+
                 reset();
 
                 struct Guard
@@ -898,6 +919,10 @@ namespace rcoro
         // Constructs a finished coroutine, with `finish_reason() == none`.
         constexpr coro() {}
 
+        // Copyable and movable, assuming all the elements are.
+        // Copying, moving, and destroying aborts the program if any of the involved coroutines are `busy()`.
+        // Can't use exceptions for those errors, because then we lose `noexcept`ness (and using them only if `noexcept` is missing is lame).
+
         // Resets the coroutine to the initial position.
         // After this, `finished() == false` and `yield_point() == -1`.
         constexpr coro  &rewind() &  {reset(); frame.state = detail::State::not_finished; return *this;}
@@ -969,9 +994,11 @@ namespace rcoro
             return !finished();
         }
 
-        // Zeroes the coroutine, destroying all variables.
-        constexpr void reset() noexcept
+        // Zeroes the coroutine, destroying all variables. Throws if `busy()`.
+        constexpr void reset()
         {
+            if (busy())
+                throw std::runtime_error("Can't reset a busy coroutine.");
             frame.reset();
         }
 
@@ -1291,8 +1318,6 @@ int main()
 {
     // * Deserialization from string.
     // *`RC_WITH_VAR()` that limits the variable scope to the next statement. This requires stacking a bunch of `if`s.
-    // * Fix state manipulations to prevent a single thread from abusing coroutines.
-    // * Init syntax that accepts only a value, not a type (and a fallback macro for a type).
     // * Tests (lifetime, exception recovery, rule-of-five)
     // * Passing parameters.
     // * Serialization-deserialization tests.
@@ -1301,6 +1326,7 @@ int main()
     // * Noexcept tests for copy/move operations.
     // * CI
     // * Test GCC and MSVC.
+    // * Optimized assignments between the same yield points.
 
     // int rcoro;
     // int detail;
@@ -1329,25 +1355,25 @@ int main()
         }
     );
 
-    using tag = decltype(x)::tag;
+    // using tag = decltype(x)::tag;
 
-    bool finished = false;
-    std::cin >> finished;
-    std::string yield;
-    if (!finished)
-    {
-        std::getline(std::cin, yield); // Flush.
-        std::getline(std::cin, yield);
-    }
-    bool ok = x.load(rcoro::finish_reason(finished), rcoro::yield_index<tag>(yield), [](auto index, auto construct)
-    {
-        std::cout << rcoro::var_name_const<tag, index.value>.view() << ": ";
-        rcoro::var_type<tag, index.value> var;
-        std::cin >> var;
-        if (var)
-            construct(var);
-    });
-    std::cout << "ok=" << ok << '\n';
+    // bool finished = false;
+    // std::cin >> finished;
+    // std::string yield;
+    // if (!finished)
+    // {
+    //     std::getline(std::cin, yield); // Flush.
+    //     std::getline(std::cin, yield);
+    // }
+    // bool ok = x.load(rcoro::finish_reason(finished), rcoro::yield_index<tag>(yield), [](auto index, auto construct)
+    // {
+    //     std::cout << rcoro::var_name_const<tag, index.value>.view() << ": ";
+    //     rcoro::var_type<tag, index.value> var;
+    //     std::cin >> var;
+    //     if (var)
+    //         construct(var);
+    // });
+    // std::cout << "ok=" << ok << '\n';
 
     // std::cout << rcoro::yield_points_uniquely_named<tag> << '\n';
 

@@ -1172,11 +1172,21 @@ namespace rcoro
     };
 }
 
-// Declare a coroutine-friendly variable.
-// Usage: `RC_VAR(name, init);`. The type is deduced from the initializer.
-#define RC_VAR(name, .../*init*/) )(var,name,__VA_ARGS__)(code,
 // Pause a coroutine. `ident` is a unique identifier for this yield point.
 #define RC_YIELD(name) )(yield,name)(code,
+// Declare a coroutine-friendly variable.
+// Usage: `RC_VAR(name, init);`. The type is deduced from the initializer.
+// Can't be used inside of a `for` header, `if` header, etc. We have helpers for that, see below.
+#define RC_VAR(name, .../*init*/) )(var,name,__VA_ARGS__)(code,
+// Same as `RC_VAR`, but the variable is only visible in the next statement.
+// Would be good for `for` loops, except we have `RC_FOR` specifically for those, see below.
+// Usage: `RC_WITH_VAR(name, init) ...`.
+// E.g. `RC_WITH_VAR(i, 0) for (...) {...}` is same as `{RC_VAR(i, 0); for (...) {...}}`.
+// Several calls can be stacked.
+#define RC_WITH_VAR(name, .../*init*/) )(withvar,name,__VA_ARGS__)(code,
+// `RC_FOR((name, init); cond; step) {...}` is equivalent to `RC_WITH_VAR(name, init) for(; cond; step) {...}`.
+#define RC_FOR(...) DETAIL_RCORO_CALL(RC_WITH_VAR, DETAIL_RCORO_GET_PAR(__VA_ARGS__)) for (DETAIL_RCORO_SKIP_PAR(__VA_ARGS__))
+// Creates a coroutine.
 #define RCORO(...) \
     [&]{ \
         /* A marker for stateful templates. */\
@@ -1213,8 +1223,25 @@ namespace rcoro
         return ::rcoro::coro<_rcoro_Types>().rewind(); \
     }()
 
+#define DETAIL_RCORO_NULL(...)
 #define DETAIL_RCORO_IDENTITY(...) __VA_ARGS__
 #define DETAIL_RCORO_CALL(m, ...) m(__VA_ARGS__)
+
+// Given `(a)b`, returns `b`. Otherwise returns the argument unchanged.
+#define DETAIL_RCORO_SKIP_PAR(...) DETAIL_RCORO_SKIP_PAR_END(DETAIL_RCORO_SKIP_PAR_ __VA_ARGS__)
+#define DETAIL_RCORO_SKIP_PAR_(...) DETAIL_RCORO_SKIPPED_PAR
+#define DETAIL_RCORO_SKIP_PAR_END(...) DETAIL_RCORO_SKIP_PAR_END_(__VA_ARGS__)
+#define DETAIL_RCORO_SKIP_PAR_END_(...) DETAIL_RCORO_SKIP_PAR_END_##__VA_ARGS__
+#define DETAIL_RCORO_SKIP_PAR_END_DETAIL_RCORO_SKIP_PAR_
+#define DETAIL_RCORO_SKIP_PAR_END_DETAIL_RCORO_SKIPPED_PAR
+
+// Given `(a)b`, returns `a`. Otherwise returns nothing.
+#define DETAIL_RCORO_GET_PAR(...) DETAIL_RCORO_GET_PAR_END(DETAIL_RCORO_GET_PAR_ __VA_ARGS__) )
+#define DETAIL_RCORO_GET_PAR_(...) DETAIL_RCORO_GOT_PAR(__VA_ARGS__)
+#define DETAIL_RCORO_GET_PAR_END(...) DETAIL_RCORO_GET_PAR_END_(__VA_ARGS__)
+#define DETAIL_RCORO_GET_PAR_END_(...) DETAIL_RCORO_GET_PAR_END_##__VA_ARGS__
+#define DETAIL_RCORO_GET_PAR_END_DETAIL_RCORO_GET_PAR_ DETAIL_RCORO_NULL(
+#define DETAIL_RCORO_GET_PAR_END_DETAIL_RCORO_GOT_PAR(...) __VA_ARGS__ DETAIL_RCORO_NULL(
 
 // Generate an internal name for a coroutine variable. `name` is the user-friendly name, and `ident` is a unique identifier.
 #define DETAIL_RCORO_STORAGE_VAR_NAME(ident, name) SF_CAT(_rcoro_var_, SF_CAT(ident, SF_CAT(_, name)))
@@ -1230,32 +1257,50 @@ namespace rcoro
 
 // An universal step function for our loops.
 #define DETAIL_RCORO_LOOP_STEP(n, d, kind, ...) SF_CAT(DETAIL_RCORO_LOOP_STEP_, kind) d
-#define DETAIL_RCORO_LOOP_STEP_code(ident, yieldindex, varindex, markers)  (       ident    , yieldindex  , varindex  , markers)
-#define DETAIL_RCORO_LOOP_STEP_var(ident, yieldindex, varindex, markers)   (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
-#define DETAIL_RCORO_LOOP_STEP_yield(ident, yieldindex, varindex, markers) (SF_CAT(ident, i), yieldindex+1, varindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_code(ident, yieldindex, varindex, markers)    (       ident    , yieldindex  , varindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_var(ident, yieldindex, varindex, markers)     (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
+#define DETAIL_RCORO_LOOP_STEP_withvar(ident, yieldindex, varindex, markers) (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
+#define DETAIL_RCORO_LOOP_STEP_yield(ident, yieldindex, varindex, markers)   (SF_CAT(ident, i), yieldindex+1, varindex  , markers)
 
 // The loop body for the function body generation.
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_CODEGEN_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...) __VA_ARGS__
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) \
+  SF_CAT(_rcoro_label_, ident): \
     /* Make sure we're not preceded by an if/for/while/etc. */\
     /* The test is performed by having two separate statements, where the latter needs the former to be visible to compile. */\
     /* Note that `[[maybe_unused]]` is not strictly necessary, but it removes an extra useless warning when this check fails. */\
     /* The rcorond variable also serves as a scope checker for yields. */\
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))) = true; \
     [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
-  SF_CAT(_rcoro_label_, ident): \
     /* If we're not jumping, initialize the variable. */\
-    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == -1 ? &_rcoro_frame : nullptr, __VA_ARGS__); \
+    DETAIL_RCORO_VAR_GUARD(varindex, name, __VA_ARGS__); \
     /* Create a reference as a fancy name for our storage variable. */\
-    auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == -1); \
+    DETAIL_RCORO_VAR_REF(varindex, name); \
     /* Jump to the next macro, if necessary. */\
     if (_rcoro_jump_to != -1) \
     { \
         /* Jump to the next location. */\
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
     } \
-    /* Stateful meta magic: */\
+    /* Stateful meta magic. This can be placed anywhere. */\
+    DETAIL_RCORO_VAR_META(varindex, markers)
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) \
+  SF_CAT(_rcoro_label_, ident): \
+    if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
+    if (DETAIL_RCORO_VAR_GUARD(varindex, name, __VA_ARGS__); false) {} else \
+    if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != -1) \
+    { \
+        DETAIL_RCORO_VAR_META(varindex, markers) \
+        goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
+    } \
+    else
+// Variable code pieces:
+#define DETAIL_RCORO_VAR_GUARD(varindex, name, ...) \
+    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == -1 ? &_rcoro_frame : nullptr, __VA_ARGS__)
+#define DETAIL_RCORO_VAR_REF(varindex, name) \
+    auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == -1)
+#define DETAIL_RCORO_VAR_META(varindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
     (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
     /* Determine the stack frame offset for this variable. */\
@@ -1290,18 +1335,21 @@ namespace rcoro
 #define DETAIL_RCORO_MARKERVARS_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_MARKERVARS_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
 #define DETAIL_RCORO_MARKERVARS_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
 #define DETAIL_RCORO_MARKERVARS_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = false;
+#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = false;
 #define DETAIL_RCORO_MARKERVARS_LOOP_BODY_yield(ident, yieldindex, varindex, markers, ...)
 
 // The loop body to generate variable descriptions for reflection.
 #define DETAIL_RCORO_VARDESC_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_VARDESC_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
+#define DETAIL_RCORO_VARDESC_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
 #define DETAIL_RCORO_VARDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, ...)
 
 // The loop body to generate yield point descriptions for reflection.
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_YIELDDESC_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, ...)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, ...)
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) , ::rcoro::detail::ValueTag<::rcoro::const_string("" name "")>
 
 
@@ -1317,7 +1365,6 @@ namespace rcoro
 int main()
 {
     // * Deserialization from string.
-    // *`RC_WITH_VAR()` that limits the variable scope to the next statement. This requires stacking a bunch of `if`s.
     // * Tests (lifetime, exception recovery, rule-of-five)
     // * Passing parameters.
     // * Serialization-deserialization tests.
@@ -1341,8 +1388,7 @@ int main()
             RC_VAR(unreachable, 0);
             (void)unreachable;
         }
-        RC_VAR(i, 0);
-        for (; i < 5; i++)
+        RC_FOR((i,0); i < 5; i++)
         {
             RC_VAR(j, 'a');
             RC_YIELD("3");

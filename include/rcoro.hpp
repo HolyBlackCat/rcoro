@@ -41,7 +41,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 00100
+#define RCORO_VERSION 100
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RC_ASSERT

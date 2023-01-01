@@ -79,8 +79,8 @@ namespace rcoro
     };
 
     // Some string-to-int functions below return those.
-    constexpr int unknown_name = -2;
-    constexpr int ambiguous_name = -3;
+    constexpr int unknown_name = -1;
+    constexpr int ambiguous_name = -2;
 
     // Why the coroutine finished executing.
     enum class finish_reason
@@ -209,8 +209,6 @@ namespace rcoro
         template <typename T, int N>
         using VarType = std::remove_pointer_t<decltype(_adl_detail_rcoro_var_type(VarTypeReader<T, N>{}))>;
 
-
-
         // Stateful trick to store var-to-var overlap data.
         template <typename T, int N>
         struct VarVarReachReader
@@ -251,6 +249,9 @@ namespace rcoro
             _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, Y>{}).size() > V
             && _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, Y>{})[V]
         )> {};
+        // A special case for the 0-th implicit yield point.
+        template <typename T, int V>
+        struct VarYieldReach<T, V, 0> : std::false_type {};
         // An array of all variables reachable from a yield point.
         template <typename T, int Y>
         constexpr auto vars_reachable_from_yield()
@@ -378,14 +379,14 @@ namespace rcoro
             // The state enum.
             State state = State::none;
             // The current yield point.
-            int pos = -1;
+            int pos = 0;
 
             // Returns true if the variable `V` exists at the current yield point.
             template <int V>
             constexpr bool var_exists() const
             {
                 bool ret = false;
-                if (pos != -1)
+                if (pos != 0) // Not strictly necessary, hopefully an optimization.
                 {
                     with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
                     {
@@ -424,7 +425,7 @@ namespace rcoro
                 if (state >= State::_busy)
                     RC_ABORT("Can't reset a busy coroutine.");
                 state = State::none;
-                if (pos == -1)
+                if (pos == 0) // Not strictly necessary, hopefully an optimization.
                     return;
                 with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
                 {
@@ -434,7 +435,7 @@ namespace rcoro
                         std::destroy_at(&var<varindex.value>());
                     });
                 });
-                pos = -1;
+                pos = 0;
             }
 
             // A helper for `handle_vars()`.
@@ -466,7 +467,7 @@ namespace rcoro
             template <typename F, typename G>
             static constexpr bool handle_vars(int pos, F &&func, G &&rollback)
             {
-                if (pos == -1)
+                if (pos == 0) // Not strictly necessary, hopefully an optimization.
                     return false;
                 bool ret = false;
                 with_const_index<NumYields<T>::value>(pos, [&](auto yield)
@@ -571,7 +572,7 @@ namespace rcoro
             using marker_t = T;
 
             State state = State::none;
-            int pos = -1;
+            int pos = 0;
 
             template <int V>
             constexpr VarType<T, V> &var()
@@ -633,14 +634,13 @@ namespace rcoro
         // Same for yields.
         template <typename T>
         constexpr auto yield_name_to_index_mapping = []{
-            std::array<std::pair<std::string_view, int>, NumYields<T>::value + 1> ret;
+            std::array<std::pair<std::string_view, int>, NumYields<T>::value> ret;
             const_for<NumYields<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
                 ret[i].first = YieldName<T, i>::value.view();
                 ret[i].second = i;
             });
-            ret[NumYields<T>::value] = {"", -1};
             std::sort(ret.begin(), ret.end());
             return ret;
         }();
@@ -785,8 +785,7 @@ namespace rcoro
     // Yield point name helpers:
 
     // Converts a yield point name to its index.
-    // Returns an error code `< -1` on failure: either `unknown_name` or `ambiguous_name`.
-    // Returns `-1` when given an empty string (unless there are unnamed yield points; then returns `ambiguous_name`).
+    // Returns a negative error code on failure: either `unknown_name` or `ambiguous_name`.
     template <tag T>
     [[nodiscard]] constexpr int yield_index_or_error_code(std::string_view name)
     {
@@ -806,13 +805,13 @@ namespace rcoro
         int ret = yield_index_or_error_code<T>(name);
         if (ret == ambiguous_name)
             throw std::runtime_error("Ambiguous coroutine yield point name: `" + std::string(name) + "`.");
-        if (ret < -1)
+        if (ret < 0)
             throw std::runtime_error("Unknown coroutine yield point name: `" + std::string(name) + "`.");
         return ret;
     }
     // Same, but works with constexpr strings, and causes a SOFT compilation error if the name is invalid.
     template <tag T, const_string Name>
-    requires(yield_index_or_error_code<T>(Name.view()) >= -1)
+    requires(yield_index_or_error_code<T>(Name.view()) >= 0)
     constexpr int yield_index_const = yield_index_or_error_code<T>(Name.view());
 
     // Given a yield point index, returns its name. Same as `yield_name_const`, but with a possibly dynamic index.
@@ -820,41 +819,24 @@ namespace rcoro
     template <tag T>
     [[nodiscard]] constexpr std::string_view yield_name(int i)
     {
-        if (i < -1 || i >= num_yields<T>)
+        if (i < 0 || i >= num_yields<T>)
             throw std::runtime_error("Coroutine yield point index is out of range.");
-        if (i == -1)
-            return {};
-        if constexpr (num_yields<T> == 0)
-        {
-            return {};
-        }
-        else
-        {
-            constexpr auto arr = []<int ...I>(std::integer_sequence<int, I...>){
-                return std::array{yield_name_const<T, I>.view()...};
-            }(std::make_integer_sequence<int, num_yields<T>>{});
-            return arr[i];
-        }
+        constexpr auto arr = []<int ...I>(std::integer_sequence<int, I...>){
+            return std::array{yield_name_const<T, I>.view()...};
+        }(std::make_integer_sequence<int, num_yields<T>>{});
+        return arr[i];
     }
 
-    // If true, all yield points are uniquely named. The names can't be empty.
+    // If true, all yield points are uniquely named.
+    // The names can't be empty, because the implicit 0-th checkpoint has an empty name.
     // If there are no yields, returns true.
     template <tag T>
     constexpr bool yield_points_uniquely_named = []{
-        if constexpr (num_yields<T> == 0)
-        {
-            return true;
-        }
-        else
-        {
-            // Make sure the names are unique, and not empty.
-            // Note `num_yields<T> + 1`. The `-1`th point implicitly has an empty name, that's the last empty `std::string_view`.
-            std::array<std::string_view, num_yields<T> + 1> arr;
-            for (int i = 0; i < num_yields<T>; i++)
-                arr[i] = yield_name<T>(i);
-            std::sort(arr.begin(), arr.end());
-            return std::adjacent_find(arr.begin(), arr.end()) == arr.end();
-        }
+        std::array<std::string_view, num_yields<T>> arr;
+        for (int i = 0; i < num_yields<T>; i++)
+            arr[i] = yield_name<T>(i);
+        std::sort(arr.begin(), arr.end());
+        return std::adjacent_find(arr.begin(), arr.end()) == arr.end();
     }();
 
 
@@ -953,15 +935,16 @@ namespace rcoro
         // Can't use exceptions for those errors, because then we lose `noexcept`ness (and using them only if `noexcept` is missing is lame).
 
         // Resets the coroutine to the initial position.
-        // After this, `finished() == false` and `yield_point() == -1`.
+        // After this, `finished() == false` and `yield_point() == 0`.
         constexpr coro  &rewind() &  {reset(); frame.state = detail::State::not_finished; return *this;}
         constexpr coro &&rewind() && {rewind(); return std::move(*this);}
 
         // Examining coroutine state:
 
         // Each coroutine can be either finished or not finished.
-        // If finished, it'll have a `finish_reason()` set, and will have `yield_point() == -1`.
-        // If not finished, it can either be `busy()` (currently executing) or not.
+        // If finished, it'll have a `finish_reason()` set, and will have `yield_point() == 0`.
+        // If not finished, it can either be `busy()` (currently executing) or not, and will have `yield_point() >= 0 && yield_point() < num_yields<T>`.
+        // Yield point 0 is special, it's automatically inserted at the beginning of a coroutine.
 
         // Same as `!finished()`.
         [[nodiscard]] explicit constexpr operator bool() const noexcept {return !finished();}
@@ -999,7 +982,7 @@ namespace rcoro
                     if (had_exception)
                     {
                         self.frame.state = detail::State::exception;
-                        self.frame.pos = -1;
+                        self.frame.pos = 0;
                     }
                 }
             };
@@ -1014,7 +997,7 @@ namespace rcoro
             if (frame.state == detail::State::running)
             {
                 frame.state = detail::State::success;
-                frame.pos = -1;
+                frame.pos = 0;
             }
             else
             {
@@ -1041,11 +1024,6 @@ namespace rcoro
         {
             if (busy())
                 throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
-            if (frame.pos == -1)
-            {
-                RC_ASSERT(!frame.template var_exists<V>());
-                return false;
-            }
             return frame.template var_exists<V>();
         }
         template <const_string Name>
@@ -1076,13 +1054,12 @@ namespace rcoro
 
         // Serialization:
 
-        // Returns the current yield point, or `-1` if none.
+        // Returns the current yield point index. Note that there's an implicit 0-th yield point at the beginning.
         [[nodiscard]] constexpr int yield_point() const noexcept {return frame.pos;}
-        // Returns the current yield point name, or empty string if `yield_point() == -1`.
+        // Returns the current yield point name.
+        // The name can be specified in `RC_YIELD("...")`, empty by default. For 0-th point the name is always empty.
         [[nodiscard]] constexpr std::string_view yield_point_name() const noexcept
         {
-            if (frame.pos == -1)
-                return {};
             return yield_name<T>(frame.pos);
         }
 
@@ -1095,7 +1072,7 @@ namespace rcoro
         {
             if (busy())
                 throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
-            if (frame.pos == -1)
+            if (frame.pos == 0) // Not strictly necessary, hopefully an optimization.
                 return;
             detail::with_const_index<num_yields<T>>(frame.pos, [&](auto yieldindex)
             {
@@ -1112,7 +1089,7 @@ namespace rcoro
 
         // Switches the coroutine to a custom state.
         // Throws if `fin_reason` is out of range.
-        // If `fin_reason != not_finished`, throws if `yield_index` is not `-1`.
+        // If `fin_reason != not_finished`, throws if `yield_index` is not `0`.
         // `func` is then called for every variable existing at that yield point.
         // `func` is `void func(auto index, auto construct)`, where `index` is the variable index in form of `std::integral_constant<int, N>`,
         // and `construct` is `void construct(auto &&...)`. `construct` must be called at most once to construct the variable. Throws if it's called more than once.
@@ -1124,11 +1101,11 @@ namespace rcoro
             reset();
             if (fin_reason < rcoro::finish_reason{} || fin_reason >= rcoro::finish_reason::_count)
                 throw std::runtime_error("Coroutine finish reason is out of range.");
-            if (yield_index < -1 || yield_index >= num_yields<T>)
+            if (yield_index < 0 || yield_index >= num_yields<T>)
                 throw std::runtime_error("Coroutine yield point index is out of range.");
-            if (fin_reason != rcoro::finish_reason::not_finished && yield_index != -1)
-                throw std::runtime_error("When loading a finished coroutine, the yield point index must be -1.");
-            bool fail = yield_index >= 0 && frame.handle_vars(
+            if (fin_reason != rcoro::finish_reason::not_finished && yield_index != 0)
+                throw std::runtime_error("When loading a finished coroutine, the yield point index must be 0.");
+            bool fail = frame.handle_vars(
                 yield_index,
                 [&](auto varindex)
                 {
@@ -1224,14 +1201,14 @@ namespace rcoro
             /* The variable descriptions. */\
             using _rcoro_vars [[maybe_unused]] = ::rcoro::detail::TypeListSkipVoid<void SF_FOR_EACH(DETAIL_RCORO_VARDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
             /* The yield point descriptions. */\
-            using _rcoro_yields [[maybe_unused]] = ::rcoro::detail::TypeListSkipVoid<void SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
+            using _rcoro_yields [[maybe_unused]] = ::rcoro::detail::TypeList<::rcoro::detail::ValueTag<::rcoro::const_string("")> SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
         }; \
         /* Fallback marker variables, used when checking reachibility from yield points. */\
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
         auto _rcoro_lambda = [](auto &RC_RESTRICT _rcoro_frame, int _rcoro_jump_to) \
         { \
             using _rcoro_frame_t = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
-            if (_rcoro_jump_to != -1) \
+            if (_rcoro_jump_to != 0) \
                 goto _rcoro_label_i; \
             SF_FOR_EACH(DETAIL_RCORO_CODEGEN_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, DETAIL_RCORO_CODEGEN_LOOP_FINAL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
         }; \
@@ -1241,7 +1218,7 @@ namespace rcoro
         if (false) \
         { \
             ::rcoro::detail::Frame<true, _rcoro_Marker> _rcoro_fake_frame; \
-            _rcoro_lambda(_rcoro_fake_frame, -1); \
+            _rcoro_lambda(_rcoro_fake_frame, 0); \
         } \
         struct _rcoro_Types \
         { \
@@ -1282,7 +1259,8 @@ namespace rcoro
 // The initial state for the macro loops.
 // (0) is a unique identifier consisting of repeated `i`s, (1), (2) are yield and variable counters respectively,
 // and (3) is a list of variable markers to test their reachibility at yield points.
-#define DETAIL_RCORO_LOOP_INIT_STATE (i,0,0,(x))
+// Yield index starts from `1` because the 0-th yield point is implicit.
+#define DETAIL_RCORO_LOOP_INIT_STATE (i,1,0,(x))
 
 // An universal step function for our loops.
 #define DETAIL_RCORO_LOOP_STEP(n, d, kind, ...) SF_CAT(DETAIL_RCORO_LOOP_STEP_, kind) d
@@ -1307,7 +1285,7 @@ namespace rcoro
     /* Create a reference as a fancy name for our storage variable. */\
     DETAIL_RCORO_VAR_REF(varindex, name); \
     /* Jump to the next macro, if necessary. */\
-    if (_rcoro_jump_to != -1) \
+    if (_rcoro_jump_to != 0) \
     { \
         /* Jump to the next location. */\
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
@@ -1318,7 +1296,7 @@ namespace rcoro
   SF_CAT(_rcoro_label_, ident): \
     if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
     if (DETAIL_RCORO_VAR_GUARD(varindex, name, __VA_ARGS__); false) {} else \
-    if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != -1) \
+    if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != 0) \
     { \
         DETAIL_RCORO_VAR_META(varindex, markers) \
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
@@ -1326,9 +1304,9 @@ namespace rcoro
     else
 // Variable code pieces:
 #define DETAIL_RCORO_VAR_GUARD(varindex, name, ...) \
-    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == -1 ? &_rcoro_frame : nullptr, __VA_ARGS__)
+    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == 0 ? &_rcoro_frame : nullptr, __VA_ARGS__)
 #define DETAIL_RCORO_VAR_REF(varindex, name) \
-    auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == -1)
+    auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
 #define DETAIL_RCORO_VAR_META(varindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
     (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
@@ -1345,11 +1323,11 @@ namespace rcoro
         _rcoro_frame.state = ::rcoro::detail::State::pausing; \
         return; \
       SF_CAT(_rcoro_label_, ident): \
-        if (_rcoro_jump_to != -1) \
+        if (_rcoro_jump_to != 0) \
         { \
             if (_rcoro_jump_to == yieldindex) \
                 /* Finish jumping. */\
-                _rcoro_jump_to = -1; \
+                _rcoro_jump_to = 0; \
             else \
                 /* Jump to the next location. */\
                 goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \

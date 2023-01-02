@@ -1325,7 +1325,7 @@ namespace rcoro
     else
 // Variable code pieces:
 #define DETAIL_RCORO_VAR_GUARD(varindex, name, ...) \
-    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard, name)(_rcoro_jump_to == 0 ? &_rcoro_frame : nullptr, __VA_ARGS__)
+    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 ? &_rcoro_frame : nullptr, __VA_ARGS__)
 #define DETAIL_RCORO_VAR_REF(varindex, name) \
     auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
 #define DETAIL_RCORO_VAR_META(varindex, markers) \

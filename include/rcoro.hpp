@@ -530,7 +530,7 @@ namespace rcoro
                     [&](auto index)
                     {
                         constexpr int i = index.value;
-                        std::construct_at(var_storage<i>(), other.var<i>());
+                        std::construct_at(var_storage<i>(), other.template var<i>()); // GCC 11 needs `template` here.
                         return false;
                     },
                     [&](auto index) noexcept
@@ -567,7 +567,7 @@ namespace rcoro
                     [&](auto index)
                     {
                         constexpr int i = index.value;
-                        std::construct_at(var_storage<i>(), std::move_if_noexcept(other.var<i>()));
+                        std::construct_at(var_storage<i>(), std::move_if_noexcept(other.template var<i>())); // GCC 11 needs `template` here.
                         return false;
                     },
                     [&](auto index) noexcept
@@ -632,11 +632,8 @@ namespace rcoro
         struct VarGuard<Frame, I>
         {
             // This saves the variable type to a stateful storage.
-            template <typename T>
-            constexpr VarGuard(const Frame *, T &&)
-            {
-                (void)VarTypeWriter<typename Frame::marker_t, I, std::decay_t<T>>{};
-            }
+            template <typename T, typename = decltype(void(VarTypeWriter<typename Frame::marker_t, I, std::decay_t<T>>{}))>
+            constexpr VarGuard(const Frame *, T &&) {}
         };
 
         // An array of pairs, mapping variable names to their indices.
@@ -1186,11 +1183,11 @@ namespace rcoro
             detail::const_for<num_vars<T>>([&](auto varindex)
             {
                 constexpr int i = varindex.value;
-                s << "\n  " << i << ". " << var_name_const<T, i>.view() << " - " << (c.var_exists<i>() ? "alive" : "dead");
+                s << "\n  " << i << ". " << var_name_const<T, i>.view() << " - " << (c.template var_exists<i>() ? "alive" : "dead"); // GCC 11 needs `template` here.
                 if constexpr (detail::Printable<var_type<T, i>, std::basic_ostream<A, B>>)
                 {
-                    if (c.var_exists<i>())
-                        s << ", " << c.var<i>();
+                    if (c.template var_exists<i>()) // GCC 11 needs `template` here.
+                        s << ", " << c.template var<i>(); // GCC 11 needs `template` here.
                 }
             });
 

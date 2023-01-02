@@ -59,6 +59,19 @@
 #define RC_RESTRICT __restrict // There's also `__restrict__`, but that doesn't work on MSVC.
 #endif
 
+// Silences GCC's silly `-Wnon-template-friend` warning.
+#ifndef DETAIL_RCORO_TEMPLATE_FRIEND
+#if defined(__GNUC__) && !defined(__clang__)
+#define DETAIL_RCORO_TEMPLATE_FRIEND(...) \
+    _Pragma("GCC diagnostic push") \
+    _Pragma("GCC diagnostic ignored \"-Wnon-template-friend\"") \
+    __VA_ARGS__ \
+    _Pragma("GCC diagnostic pop")
+#else
+#define DETAIL_RCORO_TEMPLATE_FRIEND(...) __VA_ARGS__
+#endif
+#endif
+
 namespace rcoro
 {
     // A classical constexpr string.
@@ -198,7 +211,9 @@ namespace rcoro
         template <typename T, int N>
         struct VarTypeReader
         {
+            DETAIL_RCORO_TEMPLATE_FRIEND(
             friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<T, N>);
+            )
         };
         template <typename T, int N, typename U>
         struct VarTypeWriter
@@ -213,7 +228,9 @@ namespace rcoro
         template <typename T, int N>
         struct VarVarReachReader
         {
+            DETAIL_RCORO_TEMPLATE_FRIEND(
             friend constexpr auto _adl_detail_rcoro_var_var_reach(VarVarReachReader<T, N>);
+            )
         };
         template <bool Write, typename T, int N, auto M>
         struct VarVarReachWriter
@@ -234,7 +251,9 @@ namespace rcoro
         template <typename T, int N>
         struct VarYieldReachReader
         {
+            DETAIL_RCORO_TEMPLATE_FRIEND(
             friend constexpr auto _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, N>);
+            )
         };
         template <bool Write, typename T, int N, auto M>
         struct VarYieldReachWriter
@@ -257,7 +276,7 @@ namespace rcoro
         constexpr auto vars_reachable_from_yield()
         {
             return []<int ...V>(std::integer_sequence<int, V...>){
-                std::array<int, (VarYieldReach<T, V, Y>::value + ... + 0)> ret;
+                std::array<int, (VarYieldReach<T, V, Y>::value + ... + 0)> ret{};
                 int pos = 0;
                 ((VarYieldReach<T, V, Y>::value ? void(ret[pos++] = V) : void()), ...);
                 return ret;
@@ -268,7 +287,9 @@ namespace rcoro
         template <typename T, int N>
         struct VarOffsetReader
         {
+            DETAIL_RCORO_TEMPLATE_FRIEND(
             friend constexpr std::size_t _adl_detail_rcoro_var_offset(VarOffsetReader<T, N>);
+            )
         };
         template <typename T, int N, std::size_t M>
         struct VarOffsetWriter
@@ -621,7 +642,7 @@ namespace rcoro
         // An array of pairs, mapping variable names to their indices.
         template <typename T>
         constexpr auto var_name_to_index_mapping = []{
-            std::array<std::pair<std::string_view, int>, NumVars<T>::value> ret;
+            std::array<std::pair<std::string_view, int>, NumVars<T>::value> ret{};
             const_for<NumVars<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
@@ -634,7 +655,7 @@ namespace rcoro
         // Same for yields.
         template <typename T>
         constexpr auto yield_name_to_index_mapping = []{
-            std::array<std::pair<std::string_view, int>, NumYields<T>::value> ret;
+            std::array<std::pair<std::string_view, int>, NumYields<T>::value> ret{};
             const_for<NumYields<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
@@ -704,7 +725,7 @@ namespace rcoro
     constexpr int num_vars = detail::NumVars<typename T::_rcoro_marker_t>::value;
 
     // The name of a coroutine variable `V`.
-    template <tag T, int V>
+    template <tag T, int V> requires(V >= 0 && V < num_vars<T>)
     constexpr const_string var_name_const = detail::VarName<typename T::_rcoro_marker_t, V>::value;
 
     // The type of a coroutine variable `V`.
@@ -716,7 +737,7 @@ namespace rcoro
     // Converts a variable name to its index.
     // Returns a negative error code on failure: either `unknown_name` or `ambiguous_name`.
     template <tag T>
-    [[nodiscard]] constexpr int var_index_or_error_code(std::string_view name)
+    [[nodiscard]] constexpr int var_index_or_negative(std::string_view name)
     {
         const auto &arr = detail::var_name_to_index_mapping<typename T::_rcoro_marker_t>;
         auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
@@ -731,7 +752,7 @@ namespace rcoro
     template <tag T>
     [[nodiscard]] constexpr int var_index(std::string_view name)
     {
-        int ret = var_index_or_error_code<T>(name);
+        int ret = var_index_or_negative<T>(name);
         if (ret == ambiguous_name)
             throw std::runtime_error("Ambiguous coroutine variable name: `" + std::string(name) + "`.");
         if (ret < 0)
@@ -740,8 +761,8 @@ namespace rcoro
     }
     // Same, but works with constexpr strings, and causes a SOFT compilation error if the name is invalid.
     template <tag T, const_string Name>
-    requires(var_index_or_error_code<T>(Name.view()) >= 0)
-    constexpr int var_index_const = var_index_or_error_code<T>(Name.view());
+    requires(var_index_or_negative<T>(Name.view()) >= 0)
+    constexpr int var_index_const = var_index_or_negative<T>(Name.view());
 
     // Given a variable index, returns its name. Same as `var_name_const`, but with a possibly dynamic index.
     // Throws if the index is out of range.
@@ -771,7 +792,7 @@ namespace rcoro
     constexpr int num_yields = detail::NumYields<typename T::_rcoro_marker_t>::value;
 
     // The name of a yield point.
-    template <tag T, int Y>
+    template <tag T, int Y> requires(Y >= 0 && Y < num_yields<T>)
     constexpr const_string yield_name_const = detail::YieldName<typename T::_rcoro_marker_t, Y>::value;
 
     // Whether variable `V` exists at yield point `Y`.
@@ -787,7 +808,7 @@ namespace rcoro
     // Converts a yield point name to its index.
     // Returns a negative error code on failure: either `unknown_name` or `ambiguous_name`.
     template <tag T>
-    [[nodiscard]] constexpr int yield_index_or_error_code(std::string_view name)
+    [[nodiscard]] constexpr int yield_index_or_negative(std::string_view name)
     {
         const auto &arr = detail::yield_name_to_index_mapping<typename T::_rcoro_marker_t>;
         auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
@@ -802,7 +823,7 @@ namespace rcoro
     template <tag T>
     [[nodiscard]] constexpr int yield_index(std::string_view name)
     {
-        int ret = yield_index_or_error_code<T>(name);
+        int ret = yield_index_or_negative<T>(name);
         if (ret == ambiguous_name)
             throw std::runtime_error("Ambiguous coroutine yield point name: `" + std::string(name) + "`.");
         if (ret < 0)
@@ -811,8 +832,8 @@ namespace rcoro
     }
     // Same, but works with constexpr strings, and causes a SOFT compilation error if the name is invalid.
     template <tag T, const_string Name>
-    requires(yield_index_or_error_code<T>(Name.view()) >= 0)
-    constexpr int yield_index_const = yield_index_or_error_code<T>(Name.view());
+    requires(yield_index_or_negative<T>(Name.view()) >= 0)
+    constexpr int yield_index_const = yield_index_or_negative<T>(Name.view());
 
     // Given a yield point index, returns its name. Same as `yield_name_const`, but with a possibly dynamic index.
     // Throws if the index is out of range.
@@ -831,7 +852,7 @@ namespace rcoro
     // The names can't be empty, because the implicit 0-th checkpoint has an empty name.
     // If there are no yields, returns true.
     template <tag T>
-    constexpr bool yield_points_uniquely_named = []{
+    constexpr bool yields_uniquely_named = []{
         std::array<std::string_view, num_yields<T>> arr;
         for (int i = 0; i < num_yields<T>; i++)
             arr[i] = yield_name<T>(i);
@@ -1207,7 +1228,7 @@ namespace rcoro
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
         auto _rcoro_lambda = [](auto &RC_RESTRICT _rcoro_frame, int _rcoro_jump_to) \
         { \
-            using _rcoro_frame_t = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
+            using _rcoro_frame_t [[maybe_unused]] = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
             if (_rcoro_jump_to != 0) \
                 goto _rcoro_label_i; \
             SF_FOR_EACH(DETAIL_RCORO_CODEGEN_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, DETAIL_RCORO_CODEGEN_LOOP_FINAL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \

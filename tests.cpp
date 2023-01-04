@@ -6,23 +6,33 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <typeindex>
+#include <typeinfo>
+
+#define FAIL(...) FAIL_AT(__FILE__, __LINE__, __VA_ARGS__)
+
+#define FAIL_AT(file, line, ...) \
+    do \
+    { \
+        ::std::cout << file << ":" << line << ": " << __VA_ARGS__ << "\n"; \
+        ::std::exit(1); \
+    } \
+    while (false)
 
 // Test boolean condition.
 #define ASSERT(...) \
     do \
     { \
         if (!bool(__VA_ARGS__)) \
-        { \
-            ::std::cout << "Assertion failed: " #__VA_ARGS__ "\n"; \
-            ::std::exit(1); \
-        } \
+            FAIL("Assertion failed: " #__VA_ARGS__); \
     } \
     while (false)
 
 namespace test_detail
 {
     template <typename F>
-    void expect_throw(std::string_view expr, std::string_view pattern, F &&func)
+    void expect_throw(const char* file, int line, std::string_view expr, std::string_view pattern, F &&func)
     {
         try
         {
@@ -32,17 +42,154 @@ namespace test_detail
         {
             std::string_view error = e.what();
             if (std::search(error.begin(), error.end(), pattern.begin(), pattern.end(), [](unsigned char a, unsigned char b){return std::tolower(a) == std::tolower(b);}) == error.end())
-            {
-                std::cout << "Expected exception mentioning `" << pattern << "`, but got `" << error << "` from expression `" << expr << "`.\n";
-            }
+                FAIL_AT(file, line, "Expected exception mentioning `" << pattern << "`, but got `" << error << "` from expression `" << expr << "`.");
             return;
         }
 
-        std::cout << "Expression didn't throw: " << expr << '\n';
+        FAIL_AT(file, line, ": Expression didn't throw: " << expr);
     }
 }
 
-#define THROWS(pattern, ...) ::test_detail::expect_throw(#__VA_ARGS__, pattern, [&]{(void)(__VA_ARGS__);})
+#define THROWS(pattern, ...) ::test_detail::expect_throw(__FILE__, __LINE__, #__VA_ARGS__, pattern, [&]{(void)(__VA_ARGS__);})
+
+template <typename T>
+class A;
+
+namespace test_detail
+{
+    std::string *a_log = nullptr;
+
+    struct Entry
+    {
+        std::type_index type;
+        std::string type_name;
+        bool moved_from = false;
+    };
+
+    std::map<void *, Entry> a_instances;
+
+    template <typename T>
+    void add_instance(void *target, bool moved_from)
+    {
+        if (a_instances.contains(target))
+        {
+            std::cout << *a_log;
+            FAIL("Instance already exists at " << std::uintptr_t(target) << ".");
+        }
+        if (std::uintptr_t(target) % alignof(T) != 0)
+        {
+            std::cout << *a_log;
+            FAIL("Attempt to create an instance at a misaligned address " << std::uintptr_t(target) << ". Must be aligned to " << alignof(T) << ".");
+        }
+        a_instances.try_emplace(target, Entry{.type = typeid(T), .type_name = std::string(rcoro::detail::type_name<T>()), .moved_from = moved_from});
+    }
+
+    // Returns true if the instance is moved-from.
+    template <typename T>
+    bool check_instance(void *target, bool allow_moved_from)
+    {
+        auto it = a_instances.find(target);
+        if (it == a_instances.end())
+        {
+            std::cout << *a_log;
+            FAIL("No instance at " << std::uintptr_t(target));
+        }
+        if (it->second.type != typeid(T))
+        {
+            std::cout << *a_log;
+            FAIL("Instance at " << std::uintptr_t(target) << " has the wrong type. Expected `" << rcoro::detail::type_name<T>() << "` but got `" << it->second.type_name << "`.");
+        }
+        if (!allow_moved_from && it->second.moved_from)
+        {
+            std::cout << *a_log;
+            FAIL("Instance at " << std::uintptr_t(target) << " is in moved-from state.");
+        }
+        return it->second.moved_from;
+    }
+}
+
+template <typename T>
+class A
+{
+    T value{};
+
+  public:
+    A(T new_value)
+    {
+        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::A(" + std::to_string(new_value) + ")";
+        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(this)) + "\n";
+        test_detail::add_instance<T>(this, false);
+        value = new_value;
+    }
+    A(const A &other)
+    {
+        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::A(const A & = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
+        value = other.value;
+    }
+    A(A &&other) noexcept
+    {
+        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::A(A && = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
+        test_detail::a_instances.at(&other).moved_from = true;
+        value = std::move(other.value);
+    }
+    A &operator=(const A &other)
+    {
+        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::operator=(const A & = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        test_detail::check_instance<T>(this, true);
+        test_detail::check_instance<T>(&other, true);
+        test_detail::a_instances.at(this).moved_from = test_detail::a_instances.at(&other).moved_from;
+        value = other.value;
+        return *this;
+    }
+    A &operator=(A &&other) noexcept
+    {
+        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::operator=(A && = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        test_detail::check_instance<T>(this, true);
+        test_detail::check_instance<T>(&other, true);
+        test_detail::a_instances.at(this).moved_from = test_detail::a_instances.at(&other).moved_from;
+        test_detail::a_instances.at(&other).moved_from = true;
+        value = std::move(other.value);
+        return *this;
+    }
+    ~A()
+    {
+        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::~A(" + std::to_string(value) + ")";
+        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(this)) + "\n";
+        test_detail::check_instance<T>(this, true);
+        test_detail::a_instances.erase(this);
+    }
+
+    operator T() noexcept
+    {
+        test_detail::check_instance<T>(this, false);
+        return value;
+    }
+};
+
+class Expect
+{
+    std::string log, expected_log;
+
+  public:
+    Expect(std::string expected_log) : expected_log(expected_log)
+    {
+        test_detail::a_log = &log;
+    }
+    Expect(const Expect &) = delete;
+    Expect &operator=(const Expect &) = delete;
+    ~Expect()
+    {
+        if (log != expected_log)
+            FAIL("---- Got log:\n" << log << "---- but expected log:\n" << expected_log << "----");
+        test_detail::a_log = nullptr;
+    }
+};
 
 int main()
 {
@@ -68,6 +215,7 @@ int main()
             static_assert(rcoro::frame_alignment<tag> == 1);
             static_assert(rcoro::num_vars<tag> == 0);
             THROWS("unknown", rcoro::var_index<tag>("?"));
+            THROWS("out of range", rcoro::var_name<tag>(0));
             static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
             static_assert(rcoro::num_yields<tag> == 1);
             static_assert(rcoro::yield_name<tag>(0) == "");
@@ -88,6 +236,7 @@ int main()
             static_assert(rcoro::frame_alignment<tag> == 1);
             static_assert(rcoro::num_vars<tag> == 0);
             THROWS("unknown", rcoro::var_index<tag>("?"));
+            THROWS("out of range", rcoro::var_name<tag>(0));
             static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
             static_assert(rcoro::num_yields<tag> == 2);
             static_assert(rcoro::yield_name<tag>(0) == "");
@@ -132,6 +281,8 @@ int main()
             THROWS("unknown", rcoro::var_index<tag>("?"));
             static_assert(rcoro::var_index_or_negative<tag>("a") == 0);
             static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
+            static_assert(rcoro::var_name<tag>(0) == "a");
+            THROWS("out of range", rcoro::var_name<tag>(1));
             static_assert(rcoro::num_yields<tag> == 1);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
         }
@@ -139,11 +290,76 @@ int main()
         { // Single variable visible from a single yield point.
             auto x = RCORO(RC_VAR(a, 42); (void)a; RC_YIELD(););
             using tag = decltype(x)::tag;
+            static_assert(rcoro::frame_size<tag> == sizeof(int));
+            static_assert(rcoro::frame_alignment<tag> == alignof(int));
             static_assert(rcoro::num_vars<tag> == 1);
             static_assert(rcoro::num_yields<tag> == 2);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
             static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 1>{0});
         }
+    }
+
+    { // A simple coroutine.
+        static auto x = RCORO({
+            {
+                RC_VAR(a, A(10));
+                (void)a;
+            }
+            {
+                RC_VAR(b, A(20));
+                (void)b;
+                RC_YIELD("f");
+            }
+
+            RC_FOR((c, A(char{})); c < 5; c = c+1)
+            {
+                RC_WITH_VAR(d,A(short(30)))
+                {
+                    (void)d;
+                    RC_YIELD("g");
+                }
+
+                RC_VAR(e, A(40));
+                (void)e;
+                RC_YIELD("h");
+            }
+
+            RC_YIELD("i");
+        });
+        using tag = decltype(x)::tag;
+        static_assert(rcoro::frame_size<tag> == sizeof(int) * 2);
+        static_assert(rcoro::frame_alignment<tag> == alignof(int));
+        static_assert(rcoro::num_vars<tag> == 5);
+        static_assert(rcoro::var_offset<tag, 0> == 0);
+        static_assert(rcoro::var_offset<tag, 1> == 0);
+        static_assert(rcoro::var_offset<tag, 2> == 0);
+        static_assert(rcoro::var_offset<tag, 3> == sizeof(short));
+        static_assert(rcoro::var_offset<tag, 4> == sizeof(int));
+        static_assert( rcoro::var_lifetime_overlaps_var<tag, 0, 0> && !rcoro::var_lifetime_overlaps_var<tag, 1, 0> && !rcoro::var_lifetime_overlaps_var<tag, 2, 0> && !rcoro::var_lifetime_overlaps_var<tag, 3, 0> && !rcoro::var_lifetime_overlaps_var<tag, 4, 0>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 1> &&  rcoro::var_lifetime_overlaps_var<tag, 1, 1> && !rcoro::var_lifetime_overlaps_var<tag, 2, 1> && !rcoro::var_lifetime_overlaps_var<tag, 3, 1> && !rcoro::var_lifetime_overlaps_var<tag, 4, 1>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 2> && !rcoro::var_lifetime_overlaps_var<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 3, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 4, 2>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 3> && !rcoro::var_lifetime_overlaps_var<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 3> &&  rcoro::var_lifetime_overlaps_var<tag, 3, 3> && !rcoro::var_lifetime_overlaps_var<tag, 4, 3>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 4> && !rcoro::var_lifetime_overlaps_var<tag, 1, 4> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 4> && !rcoro::var_lifetime_overlaps_var<tag, 3, 4> &&  rcoro::var_lifetime_overlaps_var<tag, 4, 4>);
+        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 2, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 0> && rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
+        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 1> &&  rcoro::var_lifetime_overlaps_yield<tag, 1, 1> && !rcoro::var_lifetime_overlaps_yield<tag, 2, 1> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 1> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 1> && rcoro::yield_vars<tag, 1> == std::array{1});
+        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 2> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_yield<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_yield<tag, 3, 2> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 2> && rcoro::yield_vars<tag, 2> == std::array{2,3});
+        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 3> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_yield<tag, 2, 3> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 3> &&  rcoro::var_lifetime_overlaps_yield<tag, 4, 3> && rcoro::yield_vars<tag, 3> == std::array{2,4});
+
+        Expect ex("");
+
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        *test_detail::a_log += "---\n";
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" && !x.var_exists<"a">() &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        *test_detail::a_log += "---\n";
+        for (int i = 0; i < 5; i++)
+        {
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
+            *test_detail::a_log += "---\n";
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
+            *test_detail::a_log += "---\n";
+        }
+        ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::success);
+        *test_detail::a_log += "---\n";
     }
 
 #if 0

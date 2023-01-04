@@ -105,6 +105,7 @@ namespace rcoro
         exception, // Finished because of an exception.
         _count,
     };
+    using enum finish_reason;
 
     namespace detail
     {
@@ -219,6 +220,12 @@ namespace rcoro
         struct VarTypeWriter
         {
             friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<T, N>) {return (U *)nullptr;}
+        };
+        template <typename T, int N>
+        struct VarTypeHelper
+        {
+            template <typename U, typename = decltype(void(VarTypeWriter<T, N, std::decay_t<U>>{}))>
+            constexpr VarTypeHelper(U &&) {}
         };
         constexpr void _adl_detail_rcoro_var_type() {} // Dummy ADL target.
         template <typename T, int N>
@@ -401,6 +408,10 @@ namespace rcoro
             State state = State::none;
             // The current yield point.
             int pos = 0;
+
+            // In fake frames, initializing this type records the initializer type to the stateful storage.
+            template <int I>
+            using TypeForInit = VarType<T, I>;
 
             // Returns true if the variable `V` exists at the current yield point.
             template <int V>
@@ -595,10 +606,23 @@ namespace rcoro
             State state = State::none;
             int pos = 0;
 
+            template <int I>
+            using TypeForInit = VarTypeHelper<T, I>;
+
+            template <int V>
+            constexpr bool var_exists()
+            {
+                return false;
+            }
             template <int V>
             constexpr VarType<T, V> &var()
             {
                 return bad_ref<VarType<T, V>>();
+            }
+            template <int V>
+            constexpr void *var_storage()
+            {
+                return nullptr;
             }
             template <int V>
             constexpr VarType<T, V> &var_or_bad_ref(bool assume_good)
@@ -612,14 +636,9 @@ namespace rcoro
         template <typename Frame, int I>
         struct VarGuard
         {
-            const Frame *frame;
+            Frame *frame = nullptr;
 
-            template <typename T>
-            constexpr VarGuard(const Frame *frame, T &&init) : frame(frame)
-            {
-                if (frame)
-                    std::construct_at(frame->template var_storage<I>(), std::forward<T>(init));
-            }
+            constexpr VarGuard(Frame *frame) : frame(frame) {}
             VarGuard(const VarGuard &) = delete;
             VarGuard &operator=(const VarGuard &) = delete;
             constexpr ~VarGuard()
@@ -627,13 +646,6 @@ namespace rcoro
                 if (frame && frame->state != State::pausing)
                     std::destroy_at(&frame->template var<I>());
             }
-        };
-        template <typename Frame, int I> requires(Frame::fake)
-        struct VarGuard<Frame, I>
-        {
-            // This saves the variable type to a stateful storage.
-            template <typename T, typename = decltype(void(VarTypeWriter<typename Frame::marker_t, I, std::decay_t<T>>{}))>
-            constexpr VarGuard(const Frame *, T &&) {}
         };
 
         // An array of pairs, mapping variable names to their indices.
@@ -983,7 +995,7 @@ namespace rcoro
 
         // Runs a single step of the coroutine. Returns the new value of `!finished()`.
         // Throws if `can_resume() == false`.
-        constexpr bool resume()
+        constexpr bool operator()()
         {
             if (!can_resume())
                 throw std::runtime_error("This coroutine can't be resumed. It's either finished or busy.");
@@ -1299,7 +1311,8 @@ namespace rcoro
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))) = true; \
     [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
     /* If we're not jumping, initialize the variable. */\
-    DETAIL_RCORO_VAR_GUARD(varindex, name, __VA_ARGS__); \
+    DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__); \
+    DETAIL_RCORO_VAR_GUARD(varindex, name); \
     /* Create a reference as a fancy name for our storage variable. */\
     DETAIL_RCORO_VAR_REF(varindex, name); \
     /* Jump to the next macro, if necessary. */\
@@ -1309,11 +1322,13 @@ namespace rcoro
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
     } \
     /* Stateful meta magic. This can be placed anywhere. */\
-    DETAIL_RCORO_VAR_META(varindex, markers)
+    DETAIL_RCORO_VAR_META(varindex, markers) \
+    /* Force trailing semicolon. */\
+    void()
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) \
   SF_CAT(_rcoro_label_, ident): \
-    if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
-    if (DETAIL_RCORO_VAR_GUARD(varindex, name, __VA_ARGS__); false) {} else \
+    if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__), false) {} else \
+    if (DETAIL_RCORO_VAR_GUARD(varindex, name); false) {} else \
     if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != 0) \
     { \
         DETAIL_RCORO_VAR_META(varindex, markers) \
@@ -1321,8 +1336,10 @@ namespace rcoro
     } \
     else
 // Variable code pieces:
-#define DETAIL_RCORO_VAR_GUARD(varindex, name, ...) \
-    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 ? &_rcoro_frame : nullptr, __VA_ARGS__)
+#define DETAIL_RCORO_VAR_INIT(varindex, ...) \
+    (_rcoro_jump_to == 0 ? void(::new((void *)_rcoro_frame.template var_storage<varindex>()) typename _rcoro_frame_t::template TypeForInit<varindex>(__VA_ARGS__)) : void())
+#define DETAIL_RCORO_VAR_GUARD(varindex, name) \
+    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template var_exists<varindex>() ? &_rcoro_frame : nullptr)
 #define DETAIL_RCORO_VAR_REF(varindex, name) \
     auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
 #define DETAIL_RCORO_VAR_META(varindex, markers) \

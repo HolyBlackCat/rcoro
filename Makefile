@@ -32,10 +32,10 @@ STDLIB := libstdc++ libc++ msvc
 # Per-compiler flag customization. A list of `compiler=flag`. All matching flags for the current compiler are applied.
 CXXFLAGS_PER_COMPILER :=
 
-# Per-compiler-stdlib environment variable customization for the tests executable. A list of `compiler:stdlib:env=value`. Use `%` to match a pattern.
-TEST_ENV_PER_COMPILER_STDLIB :=
+# Per-compiler+stdlib+optim environment variable customization for the tests executable. A list of `compiler:stdlib:optim:env=value`. Use `%` to match a pattern.
+TEST_EXTRA_ENV :=
 # Work around a bug: https://github.com/llvm/llvm-project/issues/59432
-TEST_ENV_PER_COMPILER_STDLIB += clang++-%:libc++:ASAN_OPTIONS=alloc_dealloc_mismatch=0
+TEST_EXTRA_ENV += clang++-%:libc++:O0_sanitized:ASAN_OPTIONS=alloc_dealloc_mismatch=0
 
 # Important compiler flags.
 CXXFLAGS_DEFAULT := -Iinclude -I../macro_sequence_for/include -g -pedantic-errors -Wall -Wextra -Wdeprecated -Wextra-semi -ftemplate-backtrace-limit=0
@@ -70,7 +70,7 @@ else ifeq ($(if $(filter g++% clang++%,$(COMPILER)),$(shell $(if $(filter g++%,$
 else ifneq ($(and $(filter clang++%,$(COMPILER)),$(filter libc++,$(STDLIB)),$(if $(wildcard /usr/lib/llvm-$(shell $(COMPILER) --version | grep -Po '(?<=version )[0-9]+')/include/c++),,x)),)
 	@true # Using Clang with libc++, but libc++ is not installed.
 else
-	$(call var,_env_overrides := $(strip $(foreach x,$(TEST_ENV_PER_COMPILER_STDLIB),$(if $(and $(filter $(word 1,$(subst :, ,$x)),$(COMPILER)),$(filter $(word 2,$(subst :, ,$x)),$(STDLIB))),$(word 3,$(subst :, ,$x))))))
+	$(call var,_env_overrides := $(strip $(foreach x,$(TEST_EXTRA_ENV),$(if $(and $(filter $(word 1,$(subst :, ,$x)),$(COMPILER)),$(filter $(word 2,$(subst :, ,$x)),$(STDLIB)),$(filter $(word 3,$(subst :, ,$x)),$(OPTIMIZE))),$(word 4,$(subst :, ,$x))))))
 	@+printf "%-11s C++%-7s %-10s %-14s...  " $(COMPILER) $(STANDARD) $(STDLIB) $(OPTIMIZE)
 	@+$(if $(_env_overrides),echo -n '[with $(_env_overrides)]  ')
 	@$(strip \

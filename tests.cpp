@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <typeindex>
 #include <typeinfo>
 
@@ -59,6 +60,32 @@ namespace test_detail
 {
     std::string *a_log = nullptr;
 
+    std::string string_replace(std::string_view source, std::string_view a, std::string_view b)
+    {
+        std::string ret;
+
+        std::size_t cur_pos;
+        std::size_t last_pos = 0;
+
+        while ((cur_pos = source.find(a, last_pos)) != std::string::npos)
+        {
+            ret.append(source, last_pos, cur_pos - last_pos);
+            ret += b;
+            last_pos = cur_pos + a.size();
+        }
+
+        ret += source.substr(last_pos);
+        return ret;
+    }
+
+    template <typename T>
+    std::string get_type_name()
+    {
+        std::string ret(rcoro::detail::type_name<T>());
+        ret = string_replace(ret, "short int", "short"); // GCC spells it as `short int`, breaking my test cases.
+        return ret;
+    }
+
     struct Entry
     {
         std::type_index type;
@@ -81,7 +108,7 @@ namespace test_detail
             std::cout << *a_log;
             FAIL("Attempt to create an instance at a misaligned address " << std::uintptr_t(target) << ". Must be aligned to " << alignof(T) << ".");
         }
-        a_instances.try_emplace(target, Entry{.type = typeid(T), .type_name = std::string(rcoro::detail::type_name<T>()), .moved_from = moved_from});
+        a_instances.try_emplace(target, Entry{.type = typeid(T), .type_name = std::string(get_type_name<T>()), .moved_from = moved_from});
     }
 
     // Returns true if the instance is moved-from.
@@ -97,7 +124,7 @@ namespace test_detail
         if (it->second.type != typeid(T))
         {
             std::cout << *a_log;
-            FAIL("Instance at " << std::uintptr_t(target) << " has the wrong type. Expected `" << rcoro::detail::type_name<T>() << "` but got `" << it->second.type_name << "`.");
+            FAIL("Instance at " << std::uintptr_t(target) << " has the wrong type. Expected `" << get_type_name<T>() << "` but got `" << it->second.type_name << "`.");
         }
         if (!allow_moved_from && it->second.moved_from)
         {
@@ -116,30 +143,30 @@ class A
   public:
     A(T new_value)
     {
-        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::A(" + std::to_string(new_value) + ")";
-        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(this)) + "\n";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::A(" + std::to_string(new_value) + ")";
+        *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::add_instance<T>(this, false);
         value = new_value;
     }
     A(const A &other)
     {
-        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::A(const A & = " + std::to_string(other.value) + ")";
-        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::A(const A & = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
         value = other.value;
     }
     A(A &&other) noexcept
     {
-        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::A(A && = " + std::to_string(other.value) + ")";
-        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::A(A && = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
         test_detail::a_instances.at(&other).moved_from = true;
         value = std::move(other.value);
     }
     A &operator=(const A &other)
     {
-        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::operator=(const A & = " + std::to_string(other.value) + ")";
-        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::operator=(const A & = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::check_instance<T>(this, true);
         test_detail::check_instance<T>(&other, true);
         test_detail::a_instances.at(this).moved_from = test_detail::a_instances.at(&other).moved_from;
@@ -148,8 +175,8 @@ class A
     }
     A &operator=(A &&other) noexcept
     {
-        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::operator=(A && = " + std::to_string(other.value) + ")";
-        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::operator=(A && = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::check_instance<T>(this, true);
         test_detail::check_instance<T>(&other, true);
         test_detail::a_instances.at(this).moved_from = test_detail::a_instances.at(&other).moved_from;
@@ -159,8 +186,8 @@ class A
     }
     ~A()
     {
-        *test_detail::a_log += std::string(rcoro::detail::type_name<A<T>>()) + "::~A(" + std::to_string(value) + ")";
-        *test_detail::a_log += "   @ " + std::to_string(std::uintptr_t(this)) + "\n";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::~A(" + std::to_string(value) + ")";
+        *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::check_instance<T>(this, true);
         test_detail::a_instances.erase(this);
     }
@@ -174,20 +201,98 @@ class A
 
 class Expect
 {
-    std::string log, expected_log;
+    std::string log, expected_log, expected_log_raw;
 
   public:
-    Expect(std::string expected_log) : expected_log(expected_log)
+    Expect(std::string new_log)
     {
+        std::istringstream ss(std::move(new_log));
+        std::string line;
+        while (std::getline(ss, line))
+        {
+            auto start = line.find_first_not_of(' ');
+            if (start == std::string::npos)
+                continue;
+            std::string_view line_view = std::string_view(line).substr(start);
+            expected_log_raw += line_view;
+            expected_log_raw += '\n';
+            line_view = line_view.substr(0, line_view.find_last_of('#'));
+            auto end = line_view.find_last_not_of(' ');
+            if (end == std::string::npos)
+                continue;
+            line_view = line_view.substr(0, end + 1);
+            expected_log += line_view;
+            expected_log += '\n';
+        }
+
         test_detail::a_log = &log;
     }
     Expect(const Expect &) = delete;
     Expect &operator=(const Expect &) = delete;
     ~Expect()
     {
-        if (log != expected_log)
-            FAIL("---- Got log:\n" << log << "---- but expected log:\n" << expected_log << "----");
         test_detail::a_log = nullptr;
+
+        // Strip comments from `log`.
+        std::string stripped_log;
+        std::istringstream ss(log);
+        std::string line;
+        while (std::getline(ss, line))
+        {
+            auto end = line.find_last_of('#');
+            if (end == std::string::npos)
+            {
+                stripped_log += line;
+                stripped_log += '\n';
+            }
+            else
+            {
+                std::string_view line_view = std::string_view(line).substr(0, end);
+                end = line_view.find_last_not_of(' ');
+                if (end != std::string::npos)
+                {
+                    stripped_log += line_view.substr(0, end + 1);
+                    stripped_log += '\n';
+                }
+            }
+        }
+
+        // Compare line-wise.
+        std::istringstream ss_log(stripped_log);
+        std::istringstream ss_expected(expected_log);
+        int row = 1;
+        bool fail = true;
+        while (true)
+        {
+            std::string line_log, line_expected;
+            bool log_ok(std::getline(ss_log, line_log));
+            bool expected_ok(std::getline(ss_expected, line_expected));
+            if (log_ok > expected_ok)
+            {
+                std::cout << "Expected less log. Line " << row << " wasn't expected: " << line_log << '\n';
+                break;
+            }
+            if (log_ok < expected_ok)
+            {
+                std::cout << "Expected more log. Missing line " << row << ": " << line_expected << '\n';
+                break;
+            }
+            if (!log_ok && !expected_ok)
+            {
+                fail = false;
+                break;
+            }
+            if (line_log != line_expected)
+            {
+                std::cout << "Mismatch at line " << row << ".\nExpected: " << line_expected << "\nBut got: " << line_log << "\n";
+                break;
+            }
+
+            row++;
+        }
+
+        if (fail)
+            FAIL("---- Got log:\n" << log << "---- but expected log:\n" << expected_log_raw << "----");
     }
 };
 
@@ -311,7 +416,7 @@ int main()
                 RC_YIELD("f");
             }
 
-            RC_FOR((c, A(char{})); c < 5; c = c+1)
+            RC_FOR((c, A(char{})); c < 3; c = c+1)
             {
                 RC_WITH_VAR(d,A(short(30)))
                 {
@@ -345,21 +450,57 @@ int main()
         static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 2> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_yield<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_yield<tag, 3, 2> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 2> && rcoro::yield_vars<tag, 2> == std::array{2,3});
         static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 3> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_yield<tag, 2, 3> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 3> &&  rcoro::var_lifetime_overlaps_yield<tag, 4, 3> && rcoro::yield_vars<tag, 3> == std::array{2,4});
 
-        Expect ex("");
+        Expect ex(R"(
+            A<int>::A(10)                # `a` created and destroyed immediately.
+            A<int>::~A(10)               # ^
+            A<int>::A(20)                # `b` created.
+            ...                          # Pause at `f`.
+            A<int>::~A(20)               # `b` destroyed.
+            A<char>::A(0)                # Loop counter `c` created.
+            A<short>::A(30)              # {{{ `d` created.
+            ...                          # Pause at `g`.
+            A<short>::~A(30)             # `d` destroyed.
+            A<int>::A(40)                # `e` created.
+            ...                          # Pause at `h`.
+            A<int>::~A(40)               # `d` destroyed. }}}
+            A<char>::A(1)                # Increment `c`: 0 -> 1.
+            A<char>::operator=(A && = 1) # ^
+            A<char>::~A(1)               # ^
+            A<short>::A(30)              # {{{
+            ...
+            A<short>::~A(30)
+            A<int>::A(40)
+            ...
+            A<int>::~A(40)               # }}}
+            A<char>::A(2)
+            A<char>::operator=(A && = 2)
+            A<char>::~A(2)
+            A<short>::A(30)              # {{{
+            ...
+            A<short>::~A(30)
+            A<int>::A(40)
+            ...
+            A<int>::~A(40)               # }}}
+            A<char>::A(3)                # The loop counter is incremented the last time.
+            A<char>::operator=(A && = 3) # ^
+            A<char>::~A(3)               # ^
+            A<char>::~A(3)               # The loop counter dies.
+            ...                          # Pause at `i`.
+        )");
 
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
-        *test_detail::a_log += "---\n";
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" && !x.var_exists<"a">() &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
-        *test_detail::a_log += "---\n";
-        for (int i = 0; i < 5; i++)
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        *test_detail::a_log += "...\n";
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" && !x.var_exists<"a">() &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        *test_detail::a_log += "...\n";
+        for (int i = 0; i < 3; i++)
         {
-            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
-            *test_detail::a_log += "---\n";
-            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
-            *test_detail::a_log += "---\n";
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
+            *test_detail::a_log += "...\n";
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
+            *test_detail::a_log += "...\n";
         }
-        ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::success);
-        *test_detail::a_log += "---\n";
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 4 && x.yield_point_name() == "i" && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && !x());
+        ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::success);
     }
 
 #if 0

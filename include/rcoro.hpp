@@ -100,12 +100,11 @@ namespace rcoro
     {
         // Don't reorder the first two, this allows casting booleans to `finish_reason`.
         not_finished = 0, // We're not actually finsihed.
-        none = 1, // Wasn't executing in the first place.
+        reset = 1, // Wasn't executing in the first place.
         success, // Finished normally.
         exception, // Finished because of an exception.
         _count,
     };
-    using enum finish_reason;
 
     namespace detail
     {
@@ -129,7 +128,7 @@ namespace rcoro
         {
             // Copy members from `finish_reason`.
             not_finished = std::underlying_type_t<finish_reason>(finish_reason::not_finished),
-            none         = std::underlying_type_t<finish_reason>(finish_reason::none),
+            reset        = std::underlying_type_t<finish_reason>(finish_reason::reset),
             success      = std::underlying_type_t<finish_reason>(finish_reason::success),
             exception    = std::underlying_type_t<finish_reason>(finish_reason::exception),
             // Our own members, for busy tasks.
@@ -323,11 +322,11 @@ namespace rcoro
                 VarOffset<T, M-1>::value
                 + sizeof(VarType<T, M-1>)
                 // Prepare to divide, rounding up.
-                + alignof(VarType<T, M>)
+                + alignof(VarType<T, N>)
                 - 1
             )
-            / alignof(VarType<T, M>)
-            * alignof(VarType<T, M>)>
+            / alignof(VarType<T, N>)
+            * alignof(VarType<T, N>)>
         {};
 
         // The stack frame alignment.
@@ -405,7 +404,7 @@ namespace rcoro
             using marker_t = T;
 
             // The state enum.
-            State state = State::none;
+            State state = State::reset;
             // The current yield point.
             int pos = 0;
 
@@ -456,7 +455,7 @@ namespace rcoro
             {
                 if (state >= State::_busy)
                     RC_ABORT("Can't reset a busy coroutine.");
-                state = State::none;
+                state = State::reset;
                 if (pos == 0) // Not strictly necessary, hopefully an optimization.
                     return;
                 with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
@@ -603,7 +602,7 @@ namespace rcoro
             static constexpr bool fake = true;
             using marker_t = T;
 
-            State state = State::none;
+            State state = State::reset;
             int pos = 0;
 
             template <int I>
@@ -957,7 +956,7 @@ namespace rcoro
       public:
         using tag = T;
 
-        // Constructs a finished coroutine, with `finish_reason() == none`.
+        // Constructs a finished coroutine, with `finish_reason() == reset`.
         constexpr coro() {}
 
         // Copyable and movable, assuming all the elements are.
@@ -1173,7 +1172,7 @@ namespace rcoro
                 switch (c.finish_reason())
                 {
                     case finish_reason::not_finished: RC_ASSERT(false); break;
-                    case finish_reason::none:         s << "none";      break;
+                    case finish_reason::reset:         s << "reset";      break;
                     case finish_reason::success:      s << "success";   break;
                     case finish_reason::exception:    s << "exception"; break;
                     case finish_reason::_count:       RC_ASSERT(false); break;

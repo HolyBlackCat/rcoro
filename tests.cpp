@@ -293,6 +293,10 @@ class Expect
 
         if (fail)
             FAIL("---- Got log:\n" << log << "---- but expected log:\n" << expected_log_raw << "----");
+
+        // Check for leaks.
+        if (!test_detail::a_instances.empty())
+            FAIL("Found leaks!");
     }
 };
 

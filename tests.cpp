@@ -303,9 +303,8 @@ class Expect
 
 int main()
 {
-    // * Silence GCC warnings.
     // * Deserialization from string.
-    // * Tests (lifetime, exception recovery, rule-of-five)
+    // * Tests (exception recovery, rule-of-five)
     // * Passing parameters.
     // * Serialization-deserialization tests.
     // * Strip `constexpr` that will never happen?
@@ -314,8 +313,11 @@ int main()
     // * CI
     // * Test that we include all necessary headers.
     // * Add dummy variables `rcoro` and `std` to check that we prefix everything with `::`.
-    // * Test GCC and MSVC.
-    // * Optimized assignments between the same yield points.
+    // * Test MSVC.
+    // * Optimized assignments between the same yield points?
+
+    // Make sure our macros prefix everything with `::`.
+    [[maybe_unused]] int std, rcoro, detail;
 
     { // Basic (mostly) static checks.
         { // Empty coroutine.

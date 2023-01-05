@@ -365,7 +365,12 @@ namespace rcoro
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
         struct FrameIsNothrowCopyOrMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return ((std::is_nothrow_copy_constructible_v<VarType<T, I>> || std::is_nothrow_move_constructible_v<VarType<T, I>>) && ...);
+            return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_nothrow_copy_constructible_v<VarType<T, I>>) && ...);
+        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        // The condition here must match what the `Frame` move assignment does.
+        template <typename T>
+        struct FrameCanRecoverFromFailedMove : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
+            return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_copy_constructible_v<VarType<T, I>>) && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
 
         // Stores coroutine variables and other state.
@@ -566,12 +571,15 @@ namespace rcoro
                 struct Guard
                 {
                     Frame &other;
+                    bool fail = true;
                     ~Guard()
                     {
-                        other.reset();
+                        // `other` is not reset only when an exception was thrown and we can recover the moved-from object from it.
+                        if (!fail || !FrameCanRecoverFromFailedMove<T>::value)
+                            other.reset();
                     }
                 };
-                Guard guard{other};
+                Guard guard{.other = other};
 
                 handle_vars(other.pos,
                     [&](auto index)
@@ -583,6 +591,24 @@ namespace rcoro
                     [&](auto index) noexcept
                     {
                         constexpr int i = index.value;
+
+                        // If we can recover, AND this variable was previously move by `std::move_if_noexcept`.
+                        if constexpr (FrameCanRecoverFromFailedMove<T>::value && std::is_nothrow_move_constructible_v<VarType<T, i>>)
+                        {
+                            if constexpr (std::is_nothrow_move_assignable_v<VarType<T, i>>)
+                            {
+                                other.template var<i>() = std::move(var<i>());
+                            }
+                            else
+                            {
+                                // Can't move-assign because it can throw, reconstruct in place.
+                                [&]() noexcept { // Can't let this throw.
+                                    std::destroy_at(&other.template var<i>());
+                                }();
+                                std::construct_at(other.template var_storage<i>(), std::move(var<i>()));
+                            }
+                        }
+
                         std::destroy_at(&var<i>());
                     }
                 );

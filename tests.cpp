@@ -304,7 +304,7 @@ class Expect
 int main()
 {
     // * Deserialization from string.
-    // * Tests (exception recovery, rule-of-five)
+    // * Tests (rule-of-five, including exception recovery -> examine the implementation for how to test it!)
     // * Passing parameters.
     // * Serialization-deserialization tests.
     // * Strip `constexpr` that will never happen?

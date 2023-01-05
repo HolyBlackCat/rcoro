@@ -83,6 +83,7 @@ namespace test_detail
     {
         std::string ret(rcoro::detail::type_name<T>());
         ret = string_replace(ret, "short int", "short"); // GCC spells it as `short int`, breaking my test cases.
+        ret = string_replace(ret, "long int", "long"); // ^
         return ret;
     }
 
@@ -507,94 +508,122 @@ int main()
         ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::success);
     }
 
-#if 0
-    // int rcoro;
-    // int detail;
-    // int std;
-    auto x = RCORO(
-        ::std::cout << 1 << '\n';
-        RC_YIELD("2");
-        ::std::cout << 2 << '\n';
-        RC_YIELD("1");
-        ::std::cout << 3 << '\n';
-        {
-            RC_VAR(unreachable, 0);
-            (void)unreachable;
+    { // Reset and rewind.
+        { // Stateless.
+            auto x = RCORO({
+                RC_YIELD();
+                RC_YIELD("y");
+            });
+            ASSERT(!x.busy() && !x.finished() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == "");
+            x()();
+            ASSERT(!x.busy() && !x.finished() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "y");
+            x.reset();
+            ASSERT(!x.busy() &&  x.finished() && x.finish_reason() == rcoro::finish_reason::reset        && x.yield_point() == 0 && x.yield_point_name() == "");
+            x.rewind();
+            ASSERT(!x.busy() && !x.finished() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == "");
+            x()()();
+            ASSERT(!x.busy() &&  x.finished() && x.finish_reason() == rcoro::finish_reason::success      && x.yield_point() == 0 && x.yield_point_name() == "");
+            decltype(x) y;
+            ASSERT(!y.busy() &&  y.finished() && y.finish_reason() == rcoro::finish_reason::reset        && y.yield_point() == 0 && y.yield_point_name() == "");
+
+            // Some type checks.
+            static_assert(std::is_same_v<decltype(x.reset()), decltype(x) &>);
+            static_assert(std::is_same_v<decltype(x.rewind()), decltype(x) &>);
+
+            auto &&a = decltype(x){}.reset(); // Evaluated context, to force an instantiation.
+            static_assert(std::is_same_v<decltype(a), decltype(x) &&>);
+            auto &&b = decltype(x){}.rewind(); // Evaluated context, to force an instantiation.
+            static_assert(std::is_same_v<decltype(b), decltype(x) &&>);
         }
-        RC_FOR((i,0); i < 5; i++)
-        {
-            RC_VAR(j, 'a');
-            RC_YIELD("3");
-            ::std::cout << i * 10 << '\n';
-            RC_VAR(k, short{});
-            RC_VAR(l, int{});
-            (void)j;
-            (void)k;
-            (void)l;
-        }
-    );
 
-    // using tag = decltype(x)::tag;
+        { // Stateful.
+            auto x = RCORO({
+                {
+                    RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                }
 
-    // bool finished = false;
-    // std::cin >> finished;
-    // std::string yield;
-    // if (!finished)
-    // {
-    //     std::getline(std::cin, yield); // Flush.
-    //     std::getline(std::cin, yield);
-    // }
-    // bool ok = x.load(rcoro::finish_reason(finished), rcoro::yield_index<tag>(yield), [](auto index, auto construct)
-    // {
-    //     std::cout << rcoro::var_name_const<tag, index.value>.view() << ": ";
-    //     rcoro::var_type<tag, index.value> var;
-    //     std::cin >> var;
-    //     if (var)
-    //         construct(var);
-    // });
-    // std::cout << "ok=" << ok << '\n';
+                RC_VAR(a, A(short(2)));
+                (void)a;
+                RC_VAR(b, A(long(3)));
+                (void)b;
+                RC_YIELD();
+            });
 
-    // std::cout << rcoro::yield_points_uniquely_named<tag> << '\n';
+            Expect ex(R"(
+                ...
+                A<int>::A(1)
+                A<int>::~A(1)
+                A<short>::A(2)
+                A<long>::A(3)
+                ...
+                A<long>::~A(3)
+                A<short>::~A(2)
+                ...
+                ...
+                A<int>::A(1)
+                A<int>::~A(1)
+                A<short>::A(2)
+                A<long>::A(3)
+                ...
+                A<long>::~A(3)
+                A<short>::~A(2)
+            )");
 
-
-    // ::std::cout << "{{\n";
-    // ::std::cout << x;
-    // ::std::cout << "}}\n";
-    // x.for_each_alive_var([&](auto index)
-    // {
-    //     std::cout << rcoro::var_name_const<tag, index.value>.view() << ' ';
-    // });
-    // std::cout << '\n';
-
-    if (x)
-    {
-        ::std::cout << "-\n";
-        while (x.resume())
-        {
-            // if (x.var_exists<"i">() && x.var<"i">() == 2)
-            //     x.var<"i">() = 3;
-            std::cout << "---\n";
-            // ::std::cout << "{{\n";
-            // ::std::cout << x;
-            // ::std::cout << "}}\n";
-            // x.for_each_alive_var([&](auto index)
-            // {
-            //     std::cout << rcoro::var_name_const<tag, index.value>.view() << ' ';
-            // });
-            // std::cout << '\n';
+            *test_detail::a_log += "...\n";
+            x();
+            *test_detail::a_log += "...\n";
+            x.reset();
+            *test_detail::a_log += "...\n";
+            x.rewind();
+            *test_detail::a_log += "...\n";
+            x();
+            *test_detail::a_log += "...\n";
+            x.rewind();
         }
     }
 
-    // ::std::cout << "{{\n";
-    // ::std::cout << x;
-    // ::std::cout << "}}\n";
-    // x.for_each_alive_var([&](auto index)
-    // {
-    //     std::cout << rcoro::var_name_const<tag, index.value>.view() << ' ';
-    // });
-    // std::cout << '\n';
+    { // User exceptions.
+        { // Body throws.
+            auto x = RCORO({
+                {
+                    RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                }
 
-    // std::cout << rcoro::debug_info<decltype(x)::tag> << '\n';
-#endif
+                RC_VAR(a, A(short(2)));
+                (void)a;
+                RC_VAR(b, A(long(3)));
+                (void)b;
+
+                *test_detail::a_log += "throw!\n";
+                throw 42;
+            });
+
+            Expect ex(R"(
+                # Get in position.
+                A<int>::A(1)
+                A<int>::~A(1)
+                A<short>::A(2)
+                A<long>::A(3)
+                throw!
+                # Recover.
+                A<long>::~A(3)
+                A<short>::~A(2)
+            )");
+
+            try
+            {
+                x();
+            }
+            catch (int value)
+            {
+                ASSERT(value == 42);
+            }
+
+            ASSERT(!x.busy() && x.finished() && x.finish_reason() == rcoro::finish_reason::exception && x.yield_point() == 0 && x.yield_point_name() == "");
+        }
+    }
+
     std::cout << "OK\n";
 }

@@ -463,7 +463,7 @@ namespace rcoro
                     constexpr auto indices = vars_reachable_from_yield<T, yieldindex.value>();
                     const_reverse_for<indices.size()>([&](auto varindex)
                     {
-                        std::destroy_at(&var<varindex.value>());
+                        std::destroy_at(&var<indices[varindex.value]>());
                     });
                 });
                 pos = 0;
@@ -887,7 +887,7 @@ namespace rcoro
     template <tag T, int A, int B>
     constexpr bool var_lifetime_overlaps_var = detail::VarVarReach<typename T::_rcoro_marker_t, A, B>::value;
 
-    // Print this into an `std::ostream` to get a debug information about a type.
+    // Print `debug_info<tag>` to an `std::ostream` to get a debug information about a type.
     template <tag T>
     struct debug_info_t
     {
@@ -992,9 +992,10 @@ namespace rcoro
 
         // Manipulating the coroutine:
 
-        // Runs a single step of the coroutine. Returns the new value of `!finished()`.
+        // Runs a single step of the coroutine.
+        // Returns `*this`. Note that the return value is convertible to bool, returning `!finished()`.
         // Throws if `can_resume() == false`.
-        constexpr bool operator()()
+        constexpr coro &operator()() &
         {
             if (!can_resume())
                 throw std::runtime_error("This coroutine can't be resumed. It's either finished or busy.");
@@ -1032,15 +1033,26 @@ namespace rcoro
             {
                 frame.state = detail::State::not_finished;
             }
-            return !finished();
+            return *this;
+        }
+        constexpr coro &&operator()() &&
+        {
+            operator()();
+            return std::move(*this);
         }
 
-        // Zeroes the coroutine, destroying all variables. Throws if `busy()`.
-        constexpr void reset()
+        // Zeroes the coroutine, destroying all variables. Throws if `busy()`. Returns `*this`.
+        constexpr coro &reset() &
         {
             if (busy())
                 throw std::runtime_error("Can't reset a busy coroutine.");
             frame.reset();
+            return *this;
+        }
+        constexpr coro &&reset() &&
+        {
+            reset();
+            return std::move(*this);
         }
 
 
@@ -1084,9 +1096,12 @@ namespace rcoro
         // Serialization:
 
         // Returns the current yield point index. Note that there's an implicit 0-th yield point at the beginning.
+        // Note that this never throws, and can return a valid index even while the coroutine is running.
+        // When finished, returns `0`.
         [[nodiscard]] constexpr int yield_point() const noexcept {return frame.pos;}
         // Returns the current yield point name.
         // The name can be specified in `RC_YIELD("...")`, empty by default. For 0-th point the name is always empty.
+        // Like `yield_point()`, never throws. Returns an empty string when finished.
         [[nodiscard]] constexpr std::string_view yield_point_name() const noexcept
         {
             return yield_name<T>(frame.pos);
@@ -1172,7 +1187,7 @@ namespace rcoro
                 switch (c.finish_reason())
                 {
                     case finish_reason::not_finished: RC_ASSERT(false); break;
-                    case finish_reason::reset:         s << "reset";      break;
+                    case finish_reason::reset:        s << "reset";      break;
                     case finish_reason::success:      s << "success";   break;
                     case finish_reason::exception:    s << "exception"; break;
                     case finish_reason::_count:       RC_ASSERT(false); break;

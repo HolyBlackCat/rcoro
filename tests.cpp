@@ -623,6 +623,36 @@ int main()
 
             ASSERT(!x.busy() && x.finished() && x.finish_reason() == rcoro::finish_reason::exception && x.yield_point() == 0 && x.yield_point_name() == "");
         }
+
+        { // Body throws before the first yield point.
+            auto x = RCORO({
+                *test_detail::a_log += "throw!\n";
+                throw 42;
+
+                {
+                    RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                }
+
+                RC_VAR(a, A(short(2)));
+                (void)a;
+                RC_VAR(b, A(long(3)));
+                (void)b;
+            });
+
+            Expect ex("throw!");
+
+            try
+            {
+                x();
+            }
+            catch (int value)
+            {
+                ASSERT(value == 42);
+            }
+
+            ASSERT(!x.busy() && x.finished() && x.finish_reason() == rcoro::finish_reason::exception && x.yield_point() == 0 && x.yield_point_name() == "");
+        }
     }
 
     std::cout << "OK\n";

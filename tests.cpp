@@ -733,6 +733,12 @@ int main()
                 decltype(x) source;
                 source.rewind()()();
 
+                auto check_target = [point = source.yield_point(), reason = source.finish_reason()](const decltype(x) &target)
+                {
+                    ASSERT(target.yield_point() == point);
+                    ASSERT(target.finish_reason() == reason);
+                };
+
                 {
                     if constexpr (assign.value)
                     {
@@ -746,6 +752,7 @@ int main()
                             target = std::move(source);
                         else
                             target = source;
+                        check_target(target);
                         *test_detail::a_log += "... destroy target\n";
                     }
                     else
@@ -754,11 +761,13 @@ int main()
                         if constexpr (move.value)
                         {
                             auto target = std::move(source);
+                            check_target(target);
                             *test_detail::a_log += "... destroy target\n";
                         }
                         else
                         {
                             auto target = source;
+                            check_target(target);
                             *test_detail::a_log += "... destroy target\n";
                         }
                     }

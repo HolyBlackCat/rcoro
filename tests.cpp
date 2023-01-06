@@ -163,6 +163,7 @@ class A
         test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
         test_detail::a_instances.at(&other).moved_from = true;
         value = std::move(other.value);
+        other.value *= -1; // This indicates moved-from-ness.
     }
     A &operator=(const A &other)
     {
@@ -183,6 +184,7 @@ class A
         test_detail::a_instances.at(this).moved_from = test_detail::a_instances.at(&other).moved_from;
         test_detail::a_instances.at(&other).moved_from = true;
         value = std::move(other.value);
+        other.value *= -1; // This indicates moved-from-ness.
         return *this;
     }
     ~A()
@@ -304,7 +306,7 @@ class Expect
 int main()
 {
     // * Deserialization from string.
-    // * Tests (rule-of-five, including exception recovery -> examine the implementation for how to test it!)
+    // * Tests (rule-of-five exception recovery -> examine the implementation for how to test it!)
     // * Passing parameters.
     // * Serialization-deserialization tests.
     // * Strip `constexpr` that will never happen?
@@ -472,7 +474,7 @@ int main()
             A<int>::~A(40)               # `d` destroyed. }}}
             A<char>::A(1)                # Increment `c`: 0 -> 1.
             A<char>::operator=(A && = 1) # ^
-            A<char>::~A(1)               # ^
+            A<char>::~A(-1)              # ^
             A<short>::A(30)              # {{{
             ...
             A<short>::~A(30)
@@ -481,7 +483,7 @@ int main()
             A<int>::~A(40)               # }}}
             A<char>::A(2)
             A<char>::operator=(A && = 2)
-            A<char>::~A(2)
+            A<char>::~A(-2)
             A<short>::A(30)              # {{{
             ...
             A<short>::~A(30)
@@ -490,7 +492,7 @@ int main()
             A<int>::~A(40)               # }}}
             A<char>::A(3)                # The loop counter is incremented the last time.
             A<char>::operator=(A && = 3) # ^
-            A<char>::~A(3)               # ^
+            A<char>::~A(-3)              # ^
             A<char>::~A(3)               # The loop counter dies.
             ...                          # Pause at `i`.
         )");
@@ -659,9 +661,22 @@ int main()
 
     { // Rule of five.
         { // Basic sanity check.
-            auto lambda = [&](auto move, auto assign)
+            enum class kind {start, yield, exception, _count};
+            constexpr const char *kind_names[] = {"start", "yield", "exception"};
+            static_assert(std::size(kind_names) == std::size_t(kind::_count));
+
+            auto lambda = [&](auto move, auto assign, kind source_kind, kind target_kind)
             {
+                static bool should_throw = false;
+
                 auto x = RCORO({
+                    // Throw if necessary.
+                    if (should_throw)
+                    {
+                        should_throw = false;
+                        throw 42;
+                    }
+
                     {
                         RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
                         (void)unused;
@@ -689,27 +704,43 @@ int main()
 
                 Expect ex(std::string(R"(
                     ... create source
+                )")
+                // Only if the source object is paused at a yield point, creating it involves constructing variables.
+                + (source_kind == kind::yield ? R"(
                     A<int>::A(1)
                     A<int>::~A(1)
                     A<short>::A(2)
                     A<long>::A(3)
                     A<int>::A(4)
-                )") + (assign.value ? R"(
-                    ... create target # only assignments have a target object
-                    A<int>::A(1)
-                    A<int>::~A(1)
-                    A<short>::A(2)
-                    A<long>::A(3)
-                    A<int>::A(4)
-                    A<int>::~A(4)
-                    A<int>::A(5)
-                )" : "") + R"(
+                )" : "")
+                // If we're assigning, we need to construct a target objecct.
+                + (!assign.value ? "" : std::string(R"(
+                    ... create target  # only assignments have a target object
+                )")
+                    // Only if the target object is paused at a yield point, creating it involves constructing variables.
+                    + (target_kind == kind::yield ? R"(
+                        A<int>::A(1)
+                        A<int>::~A(1)
+                        A<short>::A(2)
+                        A<long>::A(3)
+                        A<int>::A(4)
+                        A<int>::~A(4)
+                        A<int>::A(5)
+                    )" : "")
+                )
+                + R"(
                     ... act
-                )" + (assign.value ? R"(
+                )"
+                // If we're assigning, we need to destroy the existing state first. This produces output only if it's paused at a yield point.
+                + (assign.value && target_kind == kind::yield ? R"(
                     A<int>::~A(5) # destroy the assignment target
                     A<long>::~A(3)
                     A<short>::~A(2)
-                )" : "") + (!move.value ? R"(
+                )" : "")
+                // If the source is not at a yield point, copying/moving it prints nothing.
+                // If it's being copied, then we just copy the variables.
+                // If it's being moved, we move the variables and destroy the originals.
+                + (source_kind != kind::yield ? ""/*no copies or moves*/ : !move.value ? R"(
                     A<short>::A(const A & = 2) # copy
                     A<long>::A(const A & = 3)
                     A<int>::A(const A & = 4)
@@ -717,21 +748,47 @@ int main()
                     A<short>::A(A && = 2) # move
                     A<long>::A(A && = 3)
                     A<int>::A(A && = 4)
-                )") + R"(
+                    A<int>::~A(-4) # destroy moved-from source
+                    A<long>::~A(-3)
+                    A<short>::~A(-2)
+                )")
+                // Destroy the target object. This produces output only if the source had state in the first place.
+                + R"(
                     ... destroy target
+                )" + (source_kind == kind::yield ? R"(
                     A<int>::~A(4)
                     A<long>::~A(3)
                     A<short>::~A(2)
+                )" : "")
+                // Destroy the source object. This produces output only if had the state in the first place and we didn't move it away.
+                + R"(
                     ... destroy source
-                    A<int>::~A(4)
+                )" + (source_kind == kind::yield && !move.value ? R"(
+                    A<int>::~A(4) # destroy copy sources
                     A<long>::~A(3)
                     A<short>::~A(2)
-                )");
+                )" : ""));
 
                 *test_detail::a_log += std::string("# ") + (move.value ? "move" : "copy") + " " + (assign.value ? "assign" : "construct") + "\n";
+                *test_detail::a_log += std::string("# source is: ") + kind_names[int(source_kind)] + "\n";
+                if constexpr (assign.value)
+                    *test_detail::a_log += std::string("# target is: ") + kind_names[int(target_kind)] + "\n";
                 *test_detail::a_log += "... create source\n";
                 decltype(x) source;
-                source.rewind()()();
+                source.rewind();
+                switch (source_kind)
+                {
+                  case kind::start:
+                    break;
+                  case kind::yield:
+                    source()();
+                    break;
+                  case kind::exception:
+                    should_throw = true;
+                    try {source();} catch (int) {}
+                  case kind::_count:
+                    break;
+                }
 
                 auto check_target = [point = source.yield_point(), reason = source.finish_reason()](const decltype(x) &target)
                 {
@@ -744,7 +801,20 @@ int main()
                     {
                         *test_detail::a_log += "... create target\n";
                         decltype(x) target;
-                        target.rewind()()()();
+                        target.rewind();
+                        switch (target_kind)
+                        {
+                          case kind::start:
+                            break;
+                          case kind::yield:
+                            target()()();
+                            break;
+                          case kind::exception:
+                            should_throw = true;
+                            try {target();} catch (int) {}
+                          case kind::_count:
+                            break;
+                        }
 
                         *test_detail::a_log += "... act\n";
 
@@ -771,13 +841,27 @@ int main()
                             *test_detail::a_log += "... destroy target\n";
                         }
                     }
+
+                    // Check that moved-from object is empty.
+                    if constexpr (move.value)
+                    {
+                        ASSERT(source.finished() && source.finish_reason() == rcoro::finish_reason::reset && source.yield_point() == 0);
+                    }
+
                     *test_detail::a_log += "... destroy source\n";
                 }
             };
-            lambda(std::false_type{}, std::false_type{}); // Copy construct.
-            lambda(std::false_type{}, std::true_type{}); // Copy assign.
-            lambda(std::true_type{}, std::false_type{}); // Move construct.
-            lambda(std::true_type{}, std::true_type{}); // Move assign.
+
+            for (int i = 0; i < int(kind::_count); i++)
+            {
+                lambda(std::false_type{}, std::false_type{}, kind(i), kind::_count); // Copy construct.
+                lambda(std::true_type{}, std::false_type{}, kind(i), kind::_count); // Move construct.
+                for (int j = 0; j < int(kind::_count); j++)
+                {
+                    lambda(std::false_type{}, std::true_type{}, kind(i), kind(j)); // Copy assign.
+                    lambda(std::true_type{}, std::true_type{}, kind(i), kind(j)); // Move assign.
+                }
+            }
         }
     }
 

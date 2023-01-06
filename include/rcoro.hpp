@@ -616,6 +616,7 @@ namespace rcoro
                 );
                 pos = other.pos;
                 state = other.state;
+                guard.fail = false;
                 return *this;
             }
             constexpr ~Frame()

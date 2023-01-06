@@ -364,13 +364,8 @@ namespace rcoro
             return (std::is_nothrow_copy_constructible_v<VarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
-        struct FrameIsNothrowCopyOrMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_nothrow_copy_constructible_v<VarType<T, I>>) && ...);
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
-        // The condition here must match what the `Frame` move assignment does. If not movable at all, returns true for user convenience.
-        template <typename T>
-        struct FrameCanRecoverFromFailedMove : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_copy_constructible_v<VarType<T, I>> || !std::is_move_constructible_v<VarType<T, I>>) && ...);
+        struct FrameIsNothrowMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
+            return (std::is_nothrow_move_constructible_v<VarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
 
         // Stores coroutine variables and other state.
@@ -530,7 +525,7 @@ namespace rcoro
             {
                 *this = other;
             }
-            constexpr Frame(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
+            constexpr Frame(Frame &&other) noexcept(FrameIsNothrowMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
                 : FrameBase<T>() // Sic, don't want to copy the frame. Specifying the initializer to silence a GCC warning.
             {
                 *this = std::move(other);
@@ -561,7 +556,7 @@ namespace rcoro
                 return *this;
             }
             // If the assignment throws, the target will be zeroed. The source is zeroed in any case.
-            constexpr Frame &operator=(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
+            constexpr Frame &operator=(Frame &&other) noexcept(FrameIsNothrowMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
             {
                 if (&other == this)
                     return *this;
@@ -573,12 +568,9 @@ namespace rcoro
                 struct Guard
                 {
                     Frame &other;
-                    bool fail = true;
                     ~Guard()
                     {
-                        // `other` is not reset only when an exception was thrown and we can recover the moved-from object from it.
-                        if (!fail || !FrameCanRecoverFromFailedMove<T>::value)
-                            other.reset();
+                        other.reset();
                     }
                 };
                 Guard guard{.other = other};
@@ -587,36 +579,17 @@ namespace rcoro
                     [&](auto index)
                     {
                         constexpr int i = index.value;
-                        std::construct_at(var_storage<i>(), std::move_if_noexcept(other.template var<i>())); // GCC 11 needs `template` here.
+                        std::construct_at(var_storage<i>(), std::move(other.template var<i>())); // GCC 11 needs `template` here.
                         return false;
                     },
                     [&](auto index) noexcept
                     {
                         constexpr int i = index.value;
-
-                        // If we can recover, AND this variable was previously move by `std::move_if_noexcept`.
-                        if constexpr (FrameCanRecoverFromFailedMove<T>::value && std::is_nothrow_move_constructible_v<VarType<T, i>>)
-                        {
-                            if constexpr (std::is_nothrow_move_assignable_v<VarType<T, i>>)
-                            {
-                                other.template var<i>() = std::move(var<i>());
-                            }
-                            else
-                            {
-                                // Can't move-assign because it can throw, reconstruct in place.
-                                [&]() noexcept { // Can't let this throw.
-                                    std::destroy_at(&other.template var<i>());
-                                }();
-                                std::construct_at(other.template var_storage<i>(), std::move(var<i>()));
-                            }
-                        }
-
                         std::destroy_at(&var<i>());
                     }
                 );
                 pos = other.pos;
                 state = other.state;
-                guard.fail = false;
                 return *this;
             }
             constexpr ~Frame()
@@ -919,14 +892,6 @@ namespace rcoro
 
     // Misc:
 
-    // If during a coroutine move, a variable copy/move ctor (`std::move_if_noexcept`) throws,
-    // the source coroutine will be preserved in its original state if this is true,
-    // or will be reset if this is false. The target coroutine is always reset.
-    // This is false if a variable has a throwing move constructor, and no copy constructor is available.
-    // This is always true if a coroutine is not movable, for convenience.
-    template <tag T>
-    constexpr bool can_recover_source_coro_after_failed_move = detail::FrameCanRecoverFromFailedMove<typename T::_rcoro_marker_t>::value;
-
     struct rewind_tag_t {};
     // Pass this to the constructor of `coro<T>` to automatically rewind the coroutine.
     // `coro<T>{}.rewind()` isn't enough, because it requires moveability.
@@ -1223,8 +1188,7 @@ namespace rcoro
             s << "copying: ctor=" << (!std::is_copy_constructible_v<coro<T>> ? "no" : std::is_nothrow_copy_constructible_v<coro<T>> ? "yes(nothrow)" : "yes")
               << " assign=" << (!std::is_copy_assignable_v<coro<T>> ? "no" : std::is_nothrow_copy_assignable_v<coro<T>> ? "yes(nothrow)" : "yes") << '\n';
             s << "moving: ctor=" << (!std::is_move_constructible_v<coro<T>> ? "no" : std::is_nothrow_move_constructible_v<coro<T>> ? "yes(nothrow)" : "yes")
-              << " assign=" << (!std::is_move_assignable_v<coro<T>> ? "no" : std::is_nothrow_move_assignable_v<coro<T>> ? "yes(nothrow)" : "yes")
-              << ", recovers source after failed move = " << (can_recover_source_coro_after_failed_move<T> ? "yes" : "no") << '\n';
+              << " assign=" << (!std::is_move_assignable_v<coro<T>> ? "no" : std::is_nothrow_move_assignable_v<coro<T>> ? "yes(nothrow)" : "yes") << '\n';
 
             s << "frame: size=" << frame_size<T> << " align=" << frame_alignment<T> << '\n';
 

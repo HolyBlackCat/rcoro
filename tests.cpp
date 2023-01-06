@@ -898,7 +898,6 @@ int main()
             static_assert(std::is_move_constructible_v<decltype(x)> && std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(std::is_copy_assignable_v<decltype(x)> && std::is_nothrow_copy_assignable_v<decltype(x)>);
             static_assert(std::is_move_assignable_v<decltype(x)> && std::is_nothrow_move_assignable_v<decltype(x)>);
-            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>);
         }
 
         { // Immovable var.
@@ -907,7 +906,6 @@ int main()
             static_assert(!std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
             static_assert(!std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
-            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>);
         }
 
         { // Only move-constructible var.
@@ -916,7 +914,6 @@ int main()
             static_assert(std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
             static_assert(std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
-            static_assert(!rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>); // Because only move is available, and it throws.
         }
 
         { // Only nothrow-move-constructible var.
@@ -925,7 +922,6 @@ int main()
             static_assert(std::is_move_constructible_v<decltype(x)> && std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
             static_assert(std::is_move_assignable_v<decltype(x)> && std::is_nothrow_move_assignable_v<decltype(x)>);
-            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>);
         }
 
         { // Copy- and move-constructible var.
@@ -934,7 +930,6 @@ int main()
             static_assert(std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
             static_assert(std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
-            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>); // Because copy is available. Its noexcept-ness doesn't matter
         }
     }
 
@@ -944,7 +939,12 @@ int main()
             constexpr ops current_ops = current_ops_param.value;
             auto x = RCORO(RC_VAR(a, B<int, current_ops>(1)); (void)a; RC_YIELD(););
 
-            Expect ex((current_ops & ops::nothrow_move_ctor) == ops::nothrow_move_ctor || !bool(current_ops & ops::copy_ctor) ? R"(
+            Expect ex(
+                // Would use this if we used `std::move_if_noexcept`:
+                // (current_ops & ops::nothrow_move_ctor) == ops::nothrow_move_ctor || !bool(current_ops & ops::copy_ctor)
+                // Instead, a simple condition:
+                bool(current_ops & ops::move_ctor)
+            ? R"(
                 A<int>::A(1)
                 A<int>::A(A && = 1)
                 A<int>::~A(-1) # move source is destroyed here, immediately

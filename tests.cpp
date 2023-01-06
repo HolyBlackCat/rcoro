@@ -1,5 +1,3 @@
-// #include <iostream>
-
 #include <rcoro.hpp>
 
 #include <cstdlib>
@@ -205,14 +203,16 @@ class A
 enum class ops
 {
     none = 0,
-    copy_ctor           = 0b00000001,
-    nothrow_copy_ctor   = 0b00000011,
-    move_ctor           = 0b00000100,
-    nothrow_move_ctor   = 0b00001100,
-    copy_assign         = 0b00010000,
-    nothrow_copy_assign = 0b00110000,
-    move_assign         = 0b01000000,
-    nothrow_move_assign = 0b11000000,
+    copy_ctor           = 0b00'00000001,
+    nothrow_copy_ctor   = 0b00'00000011,
+    move_ctor           = 0b00'00000100,
+    nothrow_move_ctor   = 0b00'00001100,
+    copy_assign         = 0b00'00010000,
+    nothrow_copy_assign = 0b00'00110000,
+    move_assign         = 0b00'01000000,
+    nothrow_move_assign = 0b00'11000000,
+    copy_ctor_throws    = 0b01'00000001,
+    move_ctor_throws    = 0b10'00000100,
 };
 [[nodiscard]] constexpr ops operator&(ops a, ops b) {return ops(int(a) & int(b));}
 [[nodiscard]] constexpr ops operator|(ops a, ops b) {return ops(int(a) | int(b));}
@@ -222,8 +222,10 @@ template <typename T, ops O>
 struct B : A<T>
 {
     using A<T>::A;
-    constexpr B(const B &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor)) : A<T>(other) {}
-    constexpr B(B &&other) noexcept((O & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) requires(bool(O & ops::move_ctor)) : A<T>(std::move(other)) {}
+    constexpr B(const B &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor))
+        : A<T>((O & ops::copy_ctor_throws) == ops::copy_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : other) {}
+    constexpr B(B &&other) noexcept((O & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) requires(bool(O & ops::move_ctor))
+        : A<T>((O & ops::move_ctor_throws) == ops::move_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : std::move(other)) {}
     constexpr B &operator=(const B &other) noexcept((O & ops::nothrow_copy_assign) == ops::nothrow_copy_assign) requires(bool(O & ops::copy_assign)) {static_cast<A<T> &>(*this) = other; return *this;}
     constexpr B &operator=(B &&other) noexcept((O & ops::nothrow_move_assign) == ops::nothrow_move_assign) requires(bool(O & ops::move_assign)) {static_cast<A<T> &>(*this) = std::move(other); return *this;}
 };
@@ -331,8 +333,11 @@ class Expect
 
 int main()
 {
+    // * __restrict on variable refs?
+    // * __builtin_assume on jump_to?
+    // * remove condition on ::new by moving it before the label?
+
     // * Deserialization from string.
-    // * Tests (rule-of-five exception recovery -> examine the implementation for how to test it!)
     // * Passing parameters.
     // * Serialization-deserialization tests.
     // * Strip `constexpr` that will never happen?
@@ -350,6 +355,14 @@ int main()
     [[maybe_unused]] int std, rcoro, detail;
 
     { // Basic (mostly) static checks.
+        { // Stuff.
+            { // `finish_reason` values.
+                // This lets user cast booleans to `finish_reason`, which is convenient for serialization.
+                static_assert(int(rcoro::finish_reason::not_finished) == 0);
+                static_assert(int(rcoro::finish_reason::reset) == 1);
+            }
+        }
+
         { // Empty coroutine.
             auto x = RCORO();
             using tag = decltype(x)::tag;
@@ -933,7 +946,7 @@ int main()
         }
     }
 
-    { // Rule of five: `std::move_if_noexcept`.
+    { // Rule of five: the lack of `std::move_if_noexcept`.
         auto lambda = [](auto current_ops_param)
         {
             constexpr ops current_ops = current_ops_param.value;
@@ -989,6 +1002,107 @@ int main()
         lambda(std::integral_constant<ops, ops::none              | ops::nothrow_move_ctor>{});
         lambda(std::integral_constant<ops, ops::copy_ctor         | ops::nothrow_move_ctor>{});
         lambda(std::integral_constant<ops, ops::nothrow_copy_ctor | ops::nothrow_move_ctor>{});
+    }
+
+    { // Rule of five: exception handling.
+        auto lambda = [&](auto move, auto assign)
+        {
+            auto x = RCORO({
+                {
+                    RC_VAR(unused, A(0)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                }
+
+                RC_VAR(a, A(1)); (void)a;
+                RC_VAR(b, A(2)); (void)b;
+                RC_VAR(c, B<int, ops::copy_ctor_throws | ops::move_ctor_throws>(3)); (void)c;
+                RC_VAR(d, A(4)); (void)d;
+                RC_YIELD();
+            });
+
+            Expect ex(std::string(R"(
+                ... create source
+                A<int>::A(0)
+                A<int>::~A(0)
+                A<int>::A(1)
+                A<int>::A(2)
+                A<int>::A(3)
+                A<int>::A(4)
+                ... act
+            )") + (!move.value ? R"(
+                A<int>::A(const A & = 1)
+                A<int>::A(const A & = 2)
+            )" : R"(
+                A<int>::A(A && = 1)
+                A<int>::A(A && = 2)
+            )") + R"(
+                throw!
+                A<int>::~A(2) # destroy newly constructed objects
+                A<int>::~A(1) # ^
+            )" + (!move.value ? std::string(assign.value ? "... destroy target" : "") + R"(
+                ... destroy source
+                A<int>::~A(4)
+                A<int>::~A(3)
+                A<int>::~A(2)
+                A<int>::~A(1)
+            )" : R"(
+                # destroy early, while the move operation still runs.
+                A<int>::~A(4)
+                A<int>::~A(3)
+                A<int>::~A(-2) # those are already moved-from
+                A<int>::~A(-1) # ^
+            )" + std::string(assign.value ? "... destroy target" : "") + R"(
+                ... destroy source
+                # nothing remains here
+            )"));
+
+            *test_detail::a_log += std::string("# ") + (move.value ? "move" : "copy") + " " + (assign.value ? "assign" : "construct") + "\n";
+
+            *test_detail::a_log += "... create source\n";
+            decltype(x) source;
+            source.rewind()();
+
+            {
+                if constexpr (assign.value)
+                {
+                    decltype(x) target;
+                    *test_detail::a_log += "... act\n";
+
+                    try
+                    {
+                        if constexpr (move.value)
+                            target = std::move(source);
+                        else
+                            target = source;
+                    }
+                    catch (int) {}
+
+                    // ASSERT(target.finished() && target.finish_reason() == rcoro::finish_reason::reset && target.yield_point() == 0);
+                    *test_detail::a_log += "... destroy target\n";
+                }
+                else
+                {
+                    *test_detail::a_log += "... act\n";
+                    try
+                    {
+                        if constexpr (move.value)
+                            auto target = std::move(source);
+                        else
+                            auto target = source;
+                    }
+                    catch (int) {}
+                }
+
+                // ASSERT(source.finished() && source.finish_reason() == rcoro::finish_reason::reset && source.yield_point() == 0);
+
+                *test_detail::a_log += "... destroy source\n";
+            }
+        };
+
+        lambda(std::false_type{}, std::false_type{}); // Copy construct.
+        lambda(std::false_type{}, std::true_type{}); // Copy assign.
+        lambda(std::true_type{}, std::false_type{}); // Move construct.
+        lambda(std::true_type{}, std::true_type{}); // Move assign.
     }
 
     std::cout << "OK\n";

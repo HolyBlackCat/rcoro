@@ -367,10 +367,10 @@ namespace rcoro
         struct FrameIsNothrowCopyOrMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_nothrow_copy_constructible_v<VarType<T, I>>) && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
-        // The condition here must match what the `Frame` move assignment does.
+        // The condition here must match what the `Frame` move assignment does. If not movable at all, returns true for user convenience.
         template <typename T>
         struct FrameCanRecoverFromFailedMove : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_copy_constructible_v<VarType<T, I>>) && ...);
+            return ((std::is_nothrow_move_constructible_v<VarType<T, I>> || std::is_copy_constructible_v<VarType<T, I>> || !std::is_move_constructible_v<VarType<T, I>>) && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
 
         // Stores coroutine variables and other state.
@@ -916,65 +916,23 @@ namespace rcoro
     template <tag T, int A, int B>
     constexpr bool var_lifetime_overlaps_var = detail::VarVarReach<typename T::_rcoro_marker_t, A, B>::value;
 
-    // Print `debug_info<tag>` to an `std::ostream` to get a debug information about a type.
+
+    // Misc:
+
+    // If during a coroutine move, a variable copy/move ctor (`std::move_if_noexcept`) throws,
+    // the source coroutine will be preserved in its original state if this is true,
+    // or will be reset if this is false. The target coroutine is always reset.
+    // This is false if a variable has a throwing move constructor, and no copy constructor is available.
+    // This is always true if a coroutine is not movable, for convenience.
     template <tag T>
-    struct debug_info_t
-    {
-        template <typename A, typename B>
-        friend std::basic_ostream<A, B> &operator<<(std::basic_ostream<A, B> &s, debug_info_t)
-        {
-            s << "frame: size=" << frame_size<T> << " align=" << frame_alignment<T> << '\n';
+    constexpr bool can_recover_source_coro_after_failed_move = detail::FrameCanRecoverFromFailedMove<typename T::_rcoro_marker_t>::value;
 
-            s << num_vars<T> << " variable" << (num_vars<T> != 1 ? "s" : "") << ":\n";
-            detail::const_for<num_vars<T>>([&](auto varindex)
-            {
-                constexpr int i = varindex.value;
-                s << "  " << i << ". " << var_name_const<T, i>.view() << ", " << detail::type_name<var_type<T, i>>() << '\n';
-                s << "      offset=" << var_offset<T, i> << ", size=" << sizeof(var_type<T, i>) << ", align=" << alignof(var_type<T, i>) << '\n';
+    struct rewind_tag_t {};
+    // Pass this to the constructor of `coro<T>` to automatically rewind the coroutine.
+    // `coro<T>{}.rewind()` isn't enough, because it requires moveability.
+    // This is what `RCORO()` uses internally.
+    constexpr rewind_tag_t rewind{};
 
-                bool first = true;
-                detail::const_for<i>([&](auto sub_varindex)
-                {
-                    constexpr int j = sub_varindex.value;
-                    if constexpr (var_lifetime_overlaps_var<T, i, j>)
-                    {
-                        if (first)
-                        {
-                            first = false;
-                            s << "      visible_vars: ";
-                        }
-                        else
-                            s << ", ";
-                        s << j << "." << var_name_const<T, j>.view();
-                    }
-                });
-                if (!first)
-                    s << '\n';
-            });
-
-            s << num_yields<T> << " yield" << (num_yields<T> != 1 ? "s" : "") << ":\n";
-            detail::const_for<num_yields<T>>([&](auto yieldindex)
-            {
-                constexpr int i = yieldindex.value;
-                s << "  " << i << ". `" << yield_name_const<T, i>.view() << "`";
-                constexpr auto vars = yield_vars<T, i>;
-                detail::const_for<vars.size()>([&](auto varindex)
-                {
-                    constexpr int j = varindex.value;
-                    if (j == 0)
-                        s << ", visible_vars: ";
-                    else
-                        s << ", ";
-                    s << j << "." << var_name_const<T, j>.view();
-                });
-                s << '\n';
-            });
-
-            return s;
-        }
-    };
-    template <tag T>
-    constexpr debug_info_t<T> debug_info;
 
     // The coroutine class.
     template <tag T>
@@ -987,6 +945,8 @@ namespace rcoro
 
         // Constructs a finished coroutine, with `finish_reason() == reset`.
         constexpr coro() {}
+        // Constructs a ready coroutine.
+        constexpr coro(rewind_tag_t) {rewind();}
 
         // Copyable and movable, assuming all the elements are.
         // Copying, moving, and destroying aborts the program if any of the involved coroutines are `busy()`.
@@ -1249,6 +1209,75 @@ namespace rcoro
             return s;
         }
     };
+
+
+    // Debug info.
+
+    // Print `debug_info<tag>` to an `std::ostream` to get a debug information about a type.
+    template <tag T>
+    struct debug_info_t
+    {
+        template <typename A, typename B>
+        friend std::basic_ostream<A, B> &operator<<(std::basic_ostream<A, B> &s, debug_info_t)
+        {
+            s << "copying: ctor=" << (!std::is_copy_constructible_v<coro<T>> ? "no" : std::is_nothrow_copy_constructible_v<coro<T>> ? "yes(nothrow)" : "yes")
+              << " assign=" << (!std::is_copy_assignable_v<coro<T>> ? "no" : std::is_nothrow_copy_assignable_v<coro<T>> ? "yes(nothrow)" : "yes") << '\n';
+            s << "moving: ctor=" << (!std::is_move_constructible_v<coro<T>> ? "no" : std::is_nothrow_move_constructible_v<coro<T>> ? "yes(nothrow)" : "yes")
+              << " assign=" << (!std::is_move_assignable_v<coro<T>> ? "no" : std::is_nothrow_move_assignable_v<coro<T>> ? "yes(nothrow)" : "yes")
+              << ", recovers source after failed move = " << (can_recover_source_coro_after_failed_move<T> ? "yes" : "no") << '\n';
+
+            s << "frame: size=" << frame_size<T> << " align=" << frame_alignment<T> << '\n';
+
+            s << num_vars<T> << " variable" << (num_vars<T> != 1 ? "s" : "") << ":\n";
+            detail::const_for<num_vars<T>>([&](auto varindex)
+            {
+                constexpr int i = varindex.value;
+                s << "  " << i << ". " << var_name_const<T, i>.view() << ", " << detail::type_name<var_type<T, i>>() << '\n';
+                s << "      offset=" << var_offset<T, i> << ", size=" << sizeof(var_type<T, i>) << ", align=" << alignof(var_type<T, i>) << '\n';
+
+                bool first = true;
+                detail::const_for<i>([&](auto sub_varindex)
+                {
+                    constexpr int j = sub_varindex.value;
+                    if constexpr (var_lifetime_overlaps_var<T, i, j>)
+                    {
+                        if (first)
+                        {
+                            first = false;
+                            s << "      visible_vars: ";
+                        }
+                        else
+                            s << ", ";
+                        s << j << "." << var_name_const<T, j>.view();
+                    }
+                });
+                if (!first)
+                    s << '\n';
+            });
+
+            s << num_yields<T> << " yield" << (num_yields<T> != 1 ? "s" : "") << ":\n";
+            detail::const_for<num_yields<T>>([&](auto yieldindex)
+            {
+                constexpr int i = yieldindex.value;
+                s << "  " << i << ". `" << yield_name_const<T, i>.view() << "`";
+                constexpr auto vars = yield_vars<T, i>;
+                detail::const_for<vars.size()>([&](auto varindex)
+                {
+                    constexpr int j = varindex.value;
+                    if (j == 0)
+                        s << ", visible_vars: ";
+                    else
+                        s << ", ";
+                    s << j << "." << var_name_const<T, j>.view();
+                });
+                s << '\n';
+            });
+
+            return s;
+        }
+    };
+    template <tag T>
+    constexpr debug_info_t<T> debug_info;
 }
 
 // Pause a coroutine. `ident` is a unique identifier for this yield point.
@@ -1301,7 +1330,7 @@ namespace rcoro
             using _rcoro_frame_t [[maybe_unused]] = ::rcoro::detail::Frame<false, _rcoro_Marker>; \
             using _rcoro_lambda_t [[maybe_unused]] = decltype(_rcoro_lambda); \
         }; \
-        return ::rcoro::coro<_rcoro_Types>().rewind(); \
+        return ::rcoro::coro<_rcoro_Types>(::rcoro::rewind); \
     }()
 
 #define DETAIL_RCORO_NULL(...)

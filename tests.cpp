@@ -144,21 +144,21 @@ class A
   public:
     A(T new_value)
     {
-        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::A(" + std::to_string(new_value) + ")";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::A(" + std::to_string(new_value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::add_instance<T>(this, false);
         value = new_value;
     }
     A(const A &other)
     {
-        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::A(const A & = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::A(const A & = " + std::to_string(other.value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
         value = other.value;
     }
     A(A &&other) noexcept
     {
-        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::A(A && = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::A(A && = " + std::to_string(other.value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::add_instance<T>(this, test_detail::check_instance<T>(&other, true));
         test_detail::a_instances.at(&other).moved_from = true;
@@ -167,7 +167,7 @@ class A
     }
     A &operator=(const A &other)
     {
-        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::operator=(const A & = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::operator=(const A & = " + std::to_string(other.value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::check_instance<T>(this, true);
         test_detail::check_instance<T>(&other, true);
@@ -177,7 +177,7 @@ class A
     }
     A &operator=(A &&other) noexcept
     {
-        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::operator=(A && = " + std::to_string(other.value) + ")";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::operator=(A && = " + std::to_string(other.value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(&other)) + " -> " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::check_instance<T>(this, true);
         test_detail::check_instance<T>(&other, true);
@@ -189,17 +189,43 @@ class A
     }
     ~A()
     {
-        *test_detail::a_log += std::string(test_detail::get_type_name<A<T>>()) + "::~A(" + std::to_string(value) + ")";
+        *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::~A(" + std::to_string(value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(this)) + "\n";
         test_detail::check_instance<T>(this, true);
         test_detail::a_instances.erase(this);
     }
 
-    operator T() noexcept
+    explicit operator T() noexcept
     {
         test_detail::check_instance<T>(this, false);
         return value;
     }
+};
+
+enum class ops
+{
+    none = 0,
+    copy_ctor           = 0b00000001,
+    nothrow_copy_ctor   = 0b00000011,
+    move_ctor           = 0b00000100,
+    nothrow_move_ctor   = 0b00001100,
+    copy_assign         = 0b00010000,
+    nothrow_copy_assign = 0b00110000,
+    move_assign         = 0b01000000,
+    nothrow_move_assign = 0b11000000,
+};
+[[nodiscard]] constexpr ops operator&(ops a, ops b) {return ops(int(a) & int(b));}
+[[nodiscard]] constexpr ops operator|(ops a, ops b) {return ops(int(a) | int(b));}
+[[nodiscard]] constexpr ops operator~(ops a) {return ops(~int(a));}
+
+template <typename T, ops O>
+struct B : A<T>
+{
+    using A<T>::A;
+    constexpr B(const B &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor)) : A<T>(other) {}
+    constexpr B(B &&other) noexcept((O & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) requires(bool(O & ops::move_ctor)) : A<T>(std::move(other)) {}
+    constexpr B &operator=(const B &other) noexcept((O & ops::nothrow_copy_assign) == ops::nothrow_copy_assign) requires(bool(O & ops::copy_assign)) {static_cast<A<T> &>(*this) = other; return *this;}
+    constexpr B &operator=(B &&other) noexcept((O & ops::nothrow_move_assign) == ops::nothrow_move_assign) requires(bool(O & ops::move_assign)) {static_cast<A<T> &>(*this) = std::move(other); return *this;}
 };
 
 class Expect
@@ -316,7 +342,9 @@ int main()
     // * Test that we include all necessary headers.
     // * Add dummy variables `rcoro` and `std` to check that we prefix everything with `::`.
     // * Test MSVC.
-    // * Optimized assignments between the same yield points?
+    // * Possible improvements:
+    //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
+    //   * Noexcept checks and other stuff should ignore variables that aren't visible on any yield points.
 
     // Make sure our macros prefix everything with `::`.
     [[maybe_unused]] int std, rcoro, detail;
@@ -425,7 +453,7 @@ int main()
                 RC_YIELD("f");
             }
 
-            RC_FOR((c, A(char{})); c < 3; c = c+1)
+            RC_FOR((c, A(char{})); char(c) < 3; c = char(c)+1)
             {
                 RC_WITH_VAR(d,A(short(30)))
                 {
@@ -660,209 +688,307 @@ int main()
     }
 
     { // Rule of five.
-        { // Basic sanity check.
-            enum class kind {start, yield, exception, _count};
-            constexpr const char *kind_names[] = {"start", "yield", "exception"};
-            static_assert(std::size(kind_names) == std::size_t(kind::_count));
+        enum class kind {start, yield, exception, _count};
+        constexpr const char *kind_names[] = {"start", "yield", "exception"};
+        static_assert(std::size(kind_names) == std::size_t(kind::_count));
 
-            auto lambda = [&](auto move, auto assign, kind source_kind, kind target_kind)
-            {
-                static bool should_throw = false;
+        auto lambda = [&](auto move, auto assign, kind source_kind, kind target_kind)
+        {
+            static bool should_throw = false;
 
-                auto x = RCORO({
-                    // Throw if necessary.
-                    if (should_throw)
-                    {
-                        should_throw = false;
-                        throw 42;
-                    }
+            auto x = RCORO({
+                // Throw if necessary.
+                if (should_throw)
+                {
+                    should_throw = false;
+                    throw 42;
+                }
 
-                    {
-                        RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
-                        (void)unused;
-                    }
+                {
+                    RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                }
 
-                    RC_VAR(a, A(short(2)));
-                    (void)a;
-                    RC_VAR(b, A(long(3)));
-                    (void)b;
+                RC_VAR(a, A(short(2)));
+                (void)a;
+                RC_VAR(b, A(long(3)));
+                (void)b;
 
+                RC_YIELD();
+
+                {
+                    RC_VAR(d, A(int(4)));
+                    (void)d;
                     RC_YIELD();
+                }
 
-                    {
-                        RC_VAR(d, A(int(4)));
-                        (void)d;
-                        RC_YIELD();
-                    }
+                {
+                    RC_VAR(e, A(int(5)));
+                    (void)e;
+                    RC_YIELD();
+                }
+            });
 
-                    {
-                        RC_VAR(e, A(int(5)));
-                        (void)e;
-                        RC_YIELD();
-                    }
-                });
-
-                Expect ex(std::string(R"(
-                    ... create source
-                )")
-                // Only if the source object is paused at a yield point, creating it involves constructing variables.
-                + (source_kind == kind::yield ? R"(
+            Expect ex(std::string(R"(
+                ... create source
+            )")
+            // Only if the source object is paused at a yield point, creating it involves constructing variables.
+            + (source_kind == kind::yield ? R"(
+                A<int>::A(1)
+                A<int>::~A(1)
+                A<short>::A(2)
+                A<long>::A(3)
+                A<int>::A(4)
+            )" : "")
+            // If we're assigning, we need to construct a target objecct.
+            + (!assign.value ? "" : std::string(R"(
+                ... create target  # only assignments have a target object
+            )")
+                // Only if the target object is paused at a yield point, creating it involves constructing variables.
+                + (target_kind == kind::yield ? R"(
                     A<int>::A(1)
                     A<int>::~A(1)
                     A<short>::A(2)
                     A<long>::A(3)
                     A<int>::A(4)
-                )" : "")
-                // If we're assigning, we need to construct a target objecct.
-                + (!assign.value ? "" : std::string(R"(
-                    ... create target  # only assignments have a target object
-                )")
-                    // Only if the target object is paused at a yield point, creating it involves constructing variables.
-                    + (target_kind == kind::yield ? R"(
-                        A<int>::A(1)
-                        A<int>::~A(1)
-                        A<short>::A(2)
-                        A<long>::A(3)
-                        A<int>::A(4)
-                        A<int>::~A(4)
-                        A<int>::A(5)
-                    )" : "")
-                )
-                + R"(
-                    ... act
-                )"
-                // If we're assigning, we need to destroy the existing state first. This produces output only if it's paused at a yield point.
-                + (assign.value && target_kind == kind::yield ? R"(
-                    A<int>::~A(5) # destroy the assignment target
-                    A<long>::~A(3)
-                    A<short>::~A(2)
-                )" : "")
-                // If the source is not at a yield point, copying/moving it prints nothing.
-                // If it's being copied, then we just copy the variables.
-                // If it's being moved, we move the variables and destroy the originals.
-                + (source_kind != kind::yield ? ""/*no copies or moves*/ : !move.value ? R"(
-                    A<short>::A(const A & = 2) # copy
-                    A<long>::A(const A & = 3)
-                    A<int>::A(const A & = 4)
-                )" : R"(
-                    A<short>::A(A && = 2) # move
-                    A<long>::A(A && = 3)
-                    A<int>::A(A && = 4)
-                    A<int>::~A(-4) # destroy moved-from source
-                    A<long>::~A(-3)
-                    A<short>::~A(-2)
-                )")
-                // Destroy the target object. This produces output only if the source had state in the first place.
-                + R"(
-                    ... destroy target
-                )" + (source_kind == kind::yield ? R"(
                     A<int>::~A(4)
-                    A<long>::~A(3)
-                    A<short>::~A(2)
+                    A<int>::A(5)
                 )" : "")
-                // Destroy the source object. This produces output only if had the state in the first place and we didn't move it away.
-                + R"(
-                    ... destroy source
-                )" + (source_kind == kind::yield && !move.value ? R"(
-                    A<int>::~A(4) # destroy copy sources
-                    A<long>::~A(3)
-                    A<short>::~A(2)
-                )" : ""));
+            )
+            + R"(
+                ... act
+            )"
+            // If we're assigning, we need to destroy the existing state first. This produces output only if it's paused at a yield point.
+            + (assign.value && target_kind == kind::yield ? R"(
+                A<int>::~A(5) # destroy the assignment target
+                A<long>::~A(3)
+                A<short>::~A(2)
+            )" : "")
+            // If the source is not at a yield point, copying/moving it prints nothing.
+            // If it's being copied, then we just copy the variables.
+            // If it's being moved, we move the variables and destroy the originals.
+            + (source_kind != kind::yield ? ""/*no copies or moves*/ : !move.value ? R"(
+                A<short>::A(const A & = 2) # copy
+                A<long>::A(const A & = 3)
+                A<int>::A(const A & = 4)
+            )" : R"(
+                A<short>::A(A && = 2) # move
+                A<long>::A(A && = 3)
+                A<int>::A(A && = 4)
+                A<int>::~A(-4) # destroy moved-from source
+                A<long>::~A(-3)
+                A<short>::~A(-2)
+            )")
+            // Destroy the target object. This produces output only if the source had state in the first place.
+            + R"(
+                ... destroy target
+            )" + (source_kind == kind::yield ? R"(
+                A<int>::~A(4)
+                A<long>::~A(3)
+                A<short>::~A(2)
+            )" : "")
+            // Destroy the source object. This produces output only if had the state in the first place and we didn't move it away.
+            + R"(
+                ... destroy source
+            )" + (source_kind == kind::yield && !move.value ? R"(
+                A<int>::~A(4) # destroy copy sources
+                A<long>::~A(3)
+                A<short>::~A(2)
+            )" : ""));
 
-                *test_detail::a_log += std::string("# ") + (move.value ? "move" : "copy") + " " + (assign.value ? "assign" : "construct") + "\n";
-                *test_detail::a_log += std::string("# source is: ") + kind_names[int(source_kind)] + "\n";
+            *test_detail::a_log += std::string("# ") + (move.value ? "move" : "copy") + " " + (assign.value ? "assign" : "construct") + "\n";
+            *test_detail::a_log += std::string("# source is: ") + kind_names[int(source_kind)] + "\n";
+            if constexpr (assign.value)
+                *test_detail::a_log += std::string("# target is: ") + kind_names[int(target_kind)] + "\n";
+            *test_detail::a_log += "... create source\n";
+            decltype(x) source;
+            source.rewind();
+            switch (source_kind)
+            {
+              case kind::start:
+                break;
+              case kind::yield:
+                source()();
+                break;
+              case kind::exception:
+                should_throw = true;
+                try {source();} catch (int) {}
+              case kind::_count:
+                break;
+            }
+
+            auto check_target = [point = source.yield_point(), reason = source.finish_reason()](const decltype(x) &target)
+            {
+                ASSERT(target.yield_point() == point);
+                ASSERT(target.finish_reason() == reason);
+            };
+
+            {
                 if constexpr (assign.value)
-                    *test_detail::a_log += std::string("# target is: ") + kind_names[int(target_kind)] + "\n";
-                *test_detail::a_log += "... create source\n";
-                decltype(x) source;
-                source.rewind();
-                switch (source_kind)
                 {
-                  case kind::start:
-                    break;
-                  case kind::yield:
-                    source()();
-                    break;
-                  case kind::exception:
-                    should_throw = true;
-                    try {source();} catch (int) {}
-                  case kind::_count:
-                    break;
-                }
-
-                auto check_target = [point = source.yield_point(), reason = source.finish_reason()](const decltype(x) &target)
-                {
-                    ASSERT(target.yield_point() == point);
-                    ASSERT(target.finish_reason() == reason);
-                };
-
-                {
-                    if constexpr (assign.value)
+                    *test_detail::a_log += "... create target\n";
+                    decltype(x) target;
+                    target.rewind();
+                    switch (target_kind)
                     {
-                        *test_detail::a_log += "... create target\n";
-                        decltype(x) target;
-                        target.rewind();
-                        switch (target_kind)
-                        {
-                          case kind::start:
-                            break;
-                          case kind::yield:
-                            target()()();
-                            break;
-                          case kind::exception:
-                            should_throw = true;
-                            try {target();} catch (int) {}
-                          case kind::_count:
-                            break;
-                        }
+                      case kind::start:
+                        break;
+                      case kind::yield:
+                        target()()();
+                        break;
+                      case kind::exception:
+                        should_throw = true;
+                        try {target();} catch (int) {}
+                      case kind::_count:
+                        break;
+                    }
 
-                        *test_detail::a_log += "... act\n";
+                    *test_detail::a_log += "... act\n";
 
-                        if constexpr (move.value)
-                            target = std::move(source);
-                        else
-                            target = source;
+                    if constexpr (move.value)
+                        target = std::move(source);
+                    else
+                        target = source;
+                    check_target(target);
+                    *test_detail::a_log += "... destroy target\n";
+                }
+                else
+                {
+                    *test_detail::a_log += "... act\n";
+                    if constexpr (move.value)
+                    {
+                        auto target = std::move(source);
                         check_target(target);
                         *test_detail::a_log += "... destroy target\n";
                     }
                     else
                     {
-                        *test_detail::a_log += "... act\n";
-                        if constexpr (move.value)
-                        {
-                            auto target = std::move(source);
-                            check_target(target);
-                            *test_detail::a_log += "... destroy target\n";
-                        }
-                        else
-                        {
-                            auto target = source;
-                            check_target(target);
-                            *test_detail::a_log += "... destroy target\n";
-                        }
+                        auto target = source;
+                        check_target(target);
+                        *test_detail::a_log += "... destroy target\n";
                     }
-
-                    // Check that moved-from object is empty.
-                    if constexpr (move.value)
-                    {
-                        ASSERT(source.finished() && source.finish_reason() == rcoro::finish_reason::reset && source.yield_point() == 0);
-                    }
-
-                    *test_detail::a_log += "... destroy source\n";
                 }
-            };
 
-            for (int i = 0; i < int(kind::_count); i++)
-            {
-                lambda(std::false_type{}, std::false_type{}, kind(i), kind::_count); // Copy construct.
-                lambda(std::true_type{}, std::false_type{}, kind(i), kind::_count); // Move construct.
-                for (int j = 0; j < int(kind::_count); j++)
+                // Check that moved-from object is empty.
+                if constexpr (move.value)
                 {
-                    lambda(std::false_type{}, std::true_type{}, kind(i), kind(j)); // Copy assign.
-                    lambda(std::true_type{}, std::true_type{}, kind(i), kind(j)); // Move assign.
+                    ASSERT(source.finished() && source.finish_reason() == rcoro::finish_reason::reset && source.yield_point() == 0);
                 }
+
+                *test_detail::a_log += "... destroy source\n";
+            }
+        };
+
+        for (int i = 0; i < int(kind::_count); i++)
+        {
+            lambda(std::false_type{}, std::false_type{}, kind(i), kind::_count); // Copy construct.
+            lambda(std::true_type{}, std::false_type{}, kind(i), kind::_count); // Move construct.
+            for (int j = 0; j < int(kind::_count); j++)
+            {
+                lambda(std::false_type{}, std::true_type{}, kind(i), kind(j)); // Copy assign.
+                lambda(std::true_type{}, std::true_type{}, kind(i), kind(j)); // Move assign.
             }
         }
+    }
+
+    { // Rule of five: conditions and noexcept-ness.
+        { // No vars.
+            auto x = RCORO();
+            static_assert(std::is_copy_constructible_v<decltype(x)> && std::is_nothrow_copy_constructible_v<decltype(x)>);
+            static_assert(std::is_move_constructible_v<decltype(x)> && std::is_nothrow_move_constructible_v<decltype(x)>);
+            static_assert(std::is_copy_assignable_v<decltype(x)> && std::is_nothrow_copy_assignable_v<decltype(x)>);
+            static_assert(std::is_move_assignable_v<decltype(x)> && std::is_nothrow_move_assignable_v<decltype(x)>);
+            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>);
+        }
+
+        { // Immovable var.
+            auto x = RCORO(RC_VAR(a, B<int, ops::none>(1)); (void)a;);
+            static_assert(!std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
+            static_assert(!std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
+            static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
+            static_assert(!std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
+            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>);
+        }
+
+        { // Only move-constructible var.
+            auto x = RCORO(RC_VAR(a, B<int, ops::move_ctor>(1)); (void)a;);
+            static_assert(!std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
+            static_assert(std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
+            static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
+            static_assert(std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
+            static_assert(!rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>); // Because only move is available, and it throws.
+        }
+
+        { // Only nothrow-move-constructible var.
+            auto x = RCORO(RC_VAR(a, B<int, ops::nothrow_move_ctor>(1)); (void)a;);
+            static_assert(!std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
+            static_assert(std::is_move_constructible_v<decltype(x)> && std::is_nothrow_move_constructible_v<decltype(x)>);
+            static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
+            static_assert(std::is_move_assignable_v<decltype(x)> && std::is_nothrow_move_assignable_v<decltype(x)>);
+            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>);
+        }
+
+        { // Copy- and move-constructible var.
+            auto x = RCORO(RC_VAR(a, B<int, ops::copy_ctor | ops::move_ctor>(1)); (void)a;);
+            static_assert(std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
+            static_assert(std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
+            static_assert(std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
+            static_assert(std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
+            static_assert(rcoro::can_recover_source_coro_after_failed_move<decltype(x)::tag>); // Because copy is available. Its noexcept-ness doesn't matter
+        }
+    }
+
+    { // Rule of five: `std::move_if_noexcept`.
+        auto lambda = [](auto current_ops_param)
+        {
+            constexpr ops current_ops = current_ops_param.value;
+            auto x = RCORO(RC_VAR(a, B<int, current_ops>(1)); (void)a; RC_YIELD(););
+
+            Expect ex((current_ops & ops::nothrow_move_ctor) == ops::nothrow_move_ctor || !bool(current_ops & ops::copy_ctor) ? R"(
+                A<int>::A(1)
+                A<int>::A(A && = 1)
+                A<int>::~A(-1) # move source is destroyed here, immediately
+                ... destroying target
+                A<int>::~A(1)
+                ... destroying source
+                # nothing here, already destroyed the source state
+            )" : R"(
+                A<int>::A(1)
+                A<int>::A(const A & = 1)
+                A<int>::~A(1) # move source is destroyed here, immediately, even if we're actually copying
+                ... destroying target
+                A<int>::~A(1)
+                ... destroying source
+                # nothing here, already destroyed the source state
+            )");
+
+            *test_detail::a_log += "# ";
+            if ((current_ops & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) *test_detail::a_log += "nothrow-copyable";
+            else if (bool(current_ops & ops::copy_ctor)) *test_detail::a_log += "copyable";
+            else *test_detail::a_log += "non-copyable";
+            *test_detail::a_log += " + ";
+            if ((current_ops & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) *test_detail::a_log += "nothrow-movable";
+            else if (bool(current_ops & ops::move_ctor)) *test_detail::a_log += "movable";
+            else *test_detail::a_log += "non-movable";
+            *test_detail::a_log += '\n';
+
+            x();
+            {
+                auto y(std::move(x));
+                *test_detail::a_log += "... destroying target\n";
+            }
+            *test_detail::a_log += "... destroying source\n";
+        };
+
+        // lambda(std::integral_constant<ops, ops::none              | ops::none             >{}); // Not movable -> no point in testing this.
+        lambda(std::integral_constant<ops, ops::copy_ctor         | ops::none             >{});
+        lambda(std::integral_constant<ops, ops::nothrow_copy_ctor | ops::none             >{});
+        lambda(std::integral_constant<ops, ops::none              | ops::move_ctor        >{});
+        lambda(std::integral_constant<ops, ops::copy_ctor         | ops::move_ctor        >{});
+        lambda(std::integral_constant<ops, ops::nothrow_copy_ctor | ops::move_ctor        >{});
+        lambda(std::integral_constant<ops, ops::none              | ops::nothrow_move_ctor>{});
+        lambda(std::integral_constant<ops, ops::copy_ctor         | ops::nothrow_move_ctor>{});
+        lambda(std::integral_constant<ops, ops::nothrow_copy_ctor | ops::nothrow_move_ctor>{});
     }
 
     std::cout << "OK\n";

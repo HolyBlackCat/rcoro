@@ -387,9 +387,9 @@ namespace rcoro
 
             constexpr FrameBase() {}
 
-            // Copying is no-op.
-            constexpr FrameBase(const FrameBase &) {}
-            constexpr FrameBase &operator=(const FrameBase &) {return *this;}
+            // Raw frame bytes shouldn't be copied.
+            FrameBase(const FrameBase &) = delete;
+            FrameBase &operator=(const FrameBase &) = delete;
 
             constexpr       char *storage()       {return storage_array;}
             constexpr const char *storage() const {return storage_array;}
@@ -526,10 +526,12 @@ namespace rcoro
             constexpr Frame() {}
 
             constexpr Frame(const Frame &other) noexcept(FrameIsNothrowCopyConstructible<T>::value) requires FrameIsCopyConstructible<T>::value
+                : FrameBase<T>() // Sic, don't want to copy the frame. Specifying the initializer to silence a GCC warning.
             {
                 *this = other;
             }
             constexpr Frame(Frame &&other) noexcept(FrameIsNothrowCopyOrMoveConstructible<T>::value) requires FrameIsMoveConstructible<T>::value
+                : FrameBase<T>() // Sic, don't want to copy the frame. Specifying the initializer to silence a GCC warning.
             {
                 *this = std::move(other);
             }
@@ -1269,9 +1271,11 @@ namespace rcoro
         struct _rcoro_Marker \
         { \
             /* The variable descriptions. */\
-            using _rcoro_vars [[maybe_unused]] = ::rcoro::detail::TypeListSkipVoid<void SF_FOR_EACH(DETAIL_RCORO_VARDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
+            /* Without the dummy `enable_if`, GCC 10 breaks with a strange error. */\
+            using _rcoro_vars [[maybe_unused]] = typename ::std::enable_if<true, ::rcoro::detail::TypeListSkipVoid<void SF_FOR_EACH(DETAIL_RCORO_VARDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>>::type; \
             /* The yield point descriptions. */\
-            using _rcoro_yields [[maybe_unused]] = ::rcoro::detail::TypeList<::rcoro::detail::ValueTag<::rcoro::const_string("")> SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>; \
+            /* Without the dummy `enable_if`, GCC 10 breaks with a strange error. */\
+            using _rcoro_yields [[maybe_unused]] = typename ::std::enable_if<true, ::rcoro::detail::TypeList<::rcoro::detail::ValueTag<::rcoro::const_string("")> SF_FOR_EACH(DETAIL_RCORO_YIELDDESC_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__))>>::type; \
         }; \
         /* Fallback marker variables, used when checking reachibility from yield points. */\
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
@@ -1292,9 +1296,9 @@ namespace rcoro
         } \
         struct _rcoro_Types \
         { \
-            using _rcoro_marker_t = _rcoro_Marker; \
-            using _rcoro_frame_t = ::rcoro::detail::Frame<false, _rcoro_Marker>; \
-            using _rcoro_lambda_t = decltype(_rcoro_lambda); \
+            using _rcoro_marker_t [[maybe_unused]] = _rcoro_Marker; \
+            using _rcoro_frame_t [[maybe_unused]] = ::rcoro::detail::Frame<false, _rcoro_Marker>; \
+            using _rcoro_lambda_t [[maybe_unused]] = decltype(_rcoro_lambda); \
         }; \
         return ::rcoro::coro<_rcoro_Types>().rewind(); \
     }()

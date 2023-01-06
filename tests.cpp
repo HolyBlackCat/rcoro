@@ -94,10 +94,10 @@ namespace test_detail
         bool moved_from = false;
     };
 
-    std::map<void *, Entry> a_instances;
+    std::map<const void *, Entry> a_instances;
 
     template <typename T>
-    void add_instance(void *target, bool moved_from)
+    void add_instance(const void *target, bool moved_from)
     {
         if (a_instances.contains(target))
         {
@@ -114,7 +114,7 @@ namespace test_detail
 
     // Returns true if the instance is moved-from.
     template <typename T>
-    bool check_instance(void *target, bool allow_moved_from)
+    bool check_instance(const void *target, bool allow_moved_from)
     {
         auto it = a_instances.find(target);
         if (it == a_instances.end())
@@ -654,6 +654,121 @@ int main()
             }
 
             ASSERT(!x.busy() && x.finished() && x.finish_reason() == rcoro::finish_reason::exception && x.yield_point() == 0 && x.yield_point_name() == "");
+        }
+    }
+
+    { // Rule of five.
+        { // Basic sanity check.
+            auto lambda = [&](auto move, auto assign)
+            {
+                auto x = RCORO({
+                    {
+                        RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                        (void)unused;
+                    }
+
+                    RC_VAR(a, A(short(2)));
+                    (void)a;
+                    RC_VAR(b, A(long(3)));
+                    (void)b;
+
+                    RC_YIELD();
+
+                    {
+                        RC_VAR(d, A(int(4)));
+                        (void)d;
+                        RC_YIELD();
+                    }
+
+                    {
+                        RC_VAR(e, A(int(5)));
+                        (void)e;
+                        RC_YIELD();
+                    }
+                });
+
+                Expect ex(std::string(R"(
+                    ... create source
+                    A<int>::A(1)
+                    A<int>::~A(1)
+                    A<short>::A(2)
+                    A<long>::A(3)
+                    A<int>::A(4)
+                )") + (assign.value ? R"(
+                    ... create target # only assignments have a target object
+                    A<int>::A(1)
+                    A<int>::~A(1)
+                    A<short>::A(2)
+                    A<long>::A(3)
+                    A<int>::A(4)
+                    A<int>::~A(4)
+                    A<int>::A(5)
+                )" : "") + R"(
+                    ... act
+                )" + (assign.value ? R"(
+                    A<int>::~A(5) # destroy the assignment target
+                    A<long>::~A(3)
+                    A<short>::~A(2)
+                )" : "") + (!move.value ? R"(
+                    A<short>::A(const A & = 2) # copy
+                    A<long>::A(const A & = 3)
+                    A<int>::A(const A & = 4)
+                )" : R"(
+                    A<short>::A(A && = 2) # move
+                    A<long>::A(A && = 3)
+                    A<int>::A(A && = 4)
+                )") + R"(
+                    ... destroy target
+                    A<int>::~A(4)
+                    A<long>::~A(3)
+                    A<short>::~A(2)
+                    ... destroy source
+                    A<int>::~A(4)
+                    A<long>::~A(3)
+                    A<short>::~A(2)
+                )");
+
+                *test_detail::a_log += std::string("# ") + (move.value ? "move" : "copy") + " " + (assign.value ? "assign" : "construct") + "\n";
+                *test_detail::a_log += "... create source\n";
+                decltype(x) source;
+                source.rewind()()();
+
+                {
+                    if constexpr (assign.value)
+                    {
+                        *test_detail::a_log += "... create target\n";
+                        decltype(x) target;
+                        target.rewind()()()();
+
+                        *test_detail::a_log += "... act\n";
+
+                        if constexpr (move.value)
+                            target = std::move(source);
+                        else
+                            target = source;
+                        *test_detail::a_log += "... destroy target\n";
+                    }
+                    else
+                    {
+                        *test_detail::a_log += "... act\n";
+                        if constexpr (move.value)
+                        {
+                            auto target = std::move(source);
+                            *test_detail::a_log += "... destroy target\n";
+                        }
+                        else
+                        {
+                            auto target = source;
+                            *test_detail::a_log += "... destroy target\n";
+                        }
+                    }
+                    *test_detail::a_log += "... destroy source\n";
+                }
+            };
+            lambda(std::false_type{}, std::false_type{}); // Copy construct.
+            lambda(std::false_type{}, std::true_type{}); // Copy assign.
+            lambda(std::true_type{}, std::false_type{}); // Move construct.
+            lambda(std::true_type{}, std::true_type{}); // Move assign.
         }
     }
 

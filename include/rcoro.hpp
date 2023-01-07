@@ -367,6 +367,10 @@ namespace rcoro
         struct FrameIsNothrowMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_nothrow_move_constructible_v<VarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        template <typename T>
+        struct FrameIsTriviallyCopyable : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
+            return (std::is_trivially_copyable_v<VarType<T, I>> && ...);
+        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
 
         // Stores coroutine variables and other state.
         // If `Fake`, becomes an empty structure.
@@ -862,7 +866,7 @@ namespace rcoro
     // The names can't be empty, because the implicit 0-th checkpoint has an empty name.
     // If there are no yields, returns true.
     template <tag T>
-    constexpr bool yields_uniquely_named = []{
+    constexpr bool yields_names_are_unique = []{
         std::array<std::string_view, num_yields<T>> arr;
         for (int i = 0; i < num_yields<T>; i++)
             arr[i] = yield_name<T>(i);
@@ -879,6 +883,9 @@ namespace rcoro
     // Returns the stack frame alignment of the coroutine.
     template <tag T>
     constexpr std::size_t frame_alignment = detail::FrameAlignment<typename T::_rcoro_marker_t>::value;
+    // If true, the coroutine only uses `std::is_trivially_copyable` variables, meaning its frame can be freely copied around as bytes.
+    template <tag T>
+    constexpr bool frame_is_trivially_copyable = detail::FrameIsTriviallyCopyable<typename T::_rcoro_marker_t>::value;
 
     // The offset of variable `V` in the stack frame.
     // Different variables can overlap if `var_lifetime_overlaps_var` is false for them.
@@ -1018,7 +1025,7 @@ namespace rcoro
         [[nodiscard]] constexpr bool var_exists() const
         {
             if (busy())
-                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
+                throw std::runtime_error("Can't manipulate variables in a busy coroutine.");
             return frame.template var_exists<V>();
         }
         template <const_string Name>
@@ -1033,7 +1040,7 @@ namespace rcoro
         [[nodiscard]] constexpr var_type<T, V> &var()
         {
             if (busy())
-                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
+                throw std::runtime_error("Can't manipulate variables in a busy coroutine.");
             if (!frame.template var_exists<V>())
                 throw std::runtime_error("The coroutine variable `" + std::string(var_name_const<T, V>.view()) + "` doesn't exist at this point.");
             return frame.template var<V>();
@@ -1045,6 +1052,14 @@ namespace rcoro
         }
         template <const_string Name> [[nodiscard]] constexpr       var_type<T, var_index_const<T, Name>> &var()       {return var<var_index_const<T, Name>>();}
         template <const_string Name> [[nodiscard]] constexpr const var_type<T, var_index_const<T, Name>> &var() const {return var<var_index_const<T, Name>>();}
+
+
+        // Stack frame access:
+
+        // Returns a pointer to `frame_size` bytes, containing the variables. You can index into it using `var_offset`.
+        // Notably works and doesn't throw even if the coroutine is `busy()`.
+        [[nodiscard]]       void *frame_storage()       noexcept {return frame.storage();}
+        [[nodiscard]] const void *frame_storage() const noexcept {return frame.storage();}
 
 
         // Serialization:
@@ -1061,29 +1076,66 @@ namespace rcoro
             return yield_name<T>(frame.pos);
         }
 
-        // Calls a function for each alive variable. Does nothing if the coroutine is not paused.
-        // `func` is `void func(auto index)`, where `index.value` is the constexpr variable index.
+        // Calls a function for each alive variable. Throws if `busy()`. Does nothing if finished or paused at the implicit 0-th yield point.
+        // `func` is `bool func(auto index)`, where `index.value` is the constexpr variable index.
         // Use `.var<i>()` and `rcoro::var_name_const<i>` to then manipulate the variables.
-        // Throws if `busy()`.
+        // If `func` returns true, stops immeidately and also returns true.
         template <typename F>
-        constexpr void for_each_alive_var(F &&func) const
+        constexpr bool for_each_alive_var(F &&func) const
         {
             if (busy())
-                throw std::runtime_error("Can't manipulate variables while a coroutine is running.");
-            if (frame.pos == 0) // Not strictly necessary, hopefully an optimization.
-                return;
-            detail::with_const_index<num_yields<T>>(frame.pos, [&](auto yieldindex)
+                throw std::runtime_error("Can't manipulate variables in a busy coroutine.");
+            bool ret = false;
+            if (frame.pos != 0) // Not strictly necessary, hopefully an optimization.
             {
-                constexpr auto indices = yield_vars<T, yieldindex.value>;
-                detail::const_for<indices.size()>([&](auto varindex)
+                detail::with_const_index<num_yields<T>>(frame.pos, [&](auto yieldindex)
                 {
-                    func(std::integral_constant<int, indices[varindex.value]>{});
+                    constexpr auto indices = yield_vars<T, yieldindex.value>;
+                    ret = detail::const_any_of<indices.size()>([&](auto varindex)
+                    {
+                        return bool(func(std::integral_constant<int, indices[varindex.value]>{}));
+                    });
                 });
-            });
+            }
+            return ret;
         }
 
 
         // Deserialization:
+
+        // The most basic deserialization primitive. Does following, in this order:
+        // Calls `reset()`.
+        // Validates `fin_reason` and `yield_index`, throws if they are out of range. Also throws if `fin_reason != not_finished && yield_index != 0`.
+        // Calls `func`, which is `bool func()`. If it returns false, stops immediately and also returns false.
+        // `func` is supposed to load the variables into `stack_frame()`, or throw or return false on failure.
+        // Applies `fin_reason` and `yield_index`, then returns true.
+        // The `func` can be empty and always return true, if you load the variables beforehand.
+        template <typename F>
+        requires frame_is_trivially_copyable<T>
+        constexpr bool load_uninitialized(rcoro::finish_reason fin_reason, int yield_index, F &&func)
+        {
+            return load_uninitialized_UNSAFE(fin_reason, yield_index, std::forward<F>(func));
+        }
+
+        // Same as `load_uninitialized`, but compiles for any variable types (compiles even if `frame_is_trivially_copyable<T>` is false).
+        // Warning! If `func` returns true, it must placement-new all the `yield_vars` into the `frame_storage()`, otherwise UB ensues.
+        // And if `func` returns false or throws, it must not leave any variables alive.
+        template <typename F>
+        constexpr bool load_uninitialized_UNSAFE(rcoro::finish_reason fin_reason, int yield_index, F &&func)
+        {
+            reset();
+            if (fin_reason < rcoro::finish_reason{} || fin_reason >= rcoro::finish_reason::_count)
+                throw std::runtime_error("Coroutine finish reason is out of range.");
+            if (yield_index < 0 || yield_index >= num_yields<T>)
+                throw std::runtime_error("Coroutine yield point index is out of range.");
+            if (fin_reason != rcoro::finish_reason::not_finished && yield_index != 0)
+                throw std::runtime_error("When loading a finished coroutine, the yield point index must be 0.");
+            if (!bool(std::forward<F>(func)()))
+                return false;
+            frame.pos = yield_index;
+            frame.state = detail::State(fin_reason);
+            return true;
+        }
 
         // Switches the coroutine to a custom state.
         // Throws if `fin_reason` is out of range.
@@ -1097,12 +1149,7 @@ namespace rcoro
         constexpr bool load(rcoro::finish_reason fin_reason, int yield_index, F &&func)
         {
             reset();
-            if (fin_reason < rcoro::finish_reason{} || fin_reason >= rcoro::finish_reason::_count)
-                throw std::runtime_error("Coroutine finish reason is out of range.");
-            if (yield_index < 0 || yield_index >= num_yields<T>)
-                throw std::runtime_error("Coroutine yield point index is out of range.");
-            if (fin_reason != rcoro::finish_reason::not_finished && yield_index != 0)
-                throw std::runtime_error("When loading a finished coroutine, the yield point index must be 0.");
+
             bool fail = frame.handle_vars(
                 yield_index,
                 [&](auto varindex)

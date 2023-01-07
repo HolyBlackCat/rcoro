@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -342,10 +343,9 @@ int main()
     // * Serialization-deserialization tests.
     // * Strip `constexpr` that will never happen?
     // * Constexpr tests. (mostly `constinit`-ness?)
-    // * Noexcept tests for copy/move operations.
+    // * Transition away from `::tag`, accept `coro<T>` directly?
     // * CI
     // * Test that we include all necessary headers.
-    // * Add dummy variables `rcoro` and `std` to check that we prefix everything with `::`.
     // * Test MSVC.
     // * Possible improvements:
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
@@ -380,7 +380,7 @@ int main()
             static_assert(rcoro::yield_index_or_negative<tag>("") == 0);
             static_assert(rcoro::yield_index_or_negative<tag>("?") == rcoro::unknown_name);
             static_assert(rcoro::yield_index_const<tag, ""> == 0);
-            static_assert(rcoro::yields_uniquely_named<tag>);
+            static_assert(rcoro::yields_names_are_unique<tag>);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
         }
 
@@ -406,7 +406,7 @@ int main()
             static_assert(rcoro::yield_index_or_negative<tag>("?") == rcoro::unknown_name);
             static_assert(rcoro::yield_index_const<tag, ""> == 0);
             static_assert(rcoro::yield_index_const<tag, "y"> == 1);
-            static_assert(rcoro::yields_uniquely_named<tag>);
+            static_assert(rcoro::yields_names_are_unique<tag>);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
             static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 0>{});
 
@@ -422,7 +422,7 @@ int main()
                 THROWS("unknown", rcoro::yield_index<tag>("?"));
                 static_assert(rcoro::yield_index_or_negative<tag>("") == rcoro::ambiguous_name);
                 static_assert(rcoro::yield_index_or_negative<tag>("?") == rcoro::unknown_name);
-                static_assert(!rcoro::yields_uniquely_named<tag>);
+                static_assert(!rcoro::yields_names_are_unique<tag>);
                 static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
                 static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 0>{});
             }
@@ -452,10 +452,33 @@ int main()
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
             static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 1>{0});
         }
+
+        { // `frame_is_trivially_copyable`
+            { // Empty coroutine.
+                auto x = RCORO();
+                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+            }
+
+            { // Trivially copyable variable.
+                auto x = RCORO(RC_VAR(a, int(42)); (void)a; RC_YIELD(););
+                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+            }
+
+            { // Non-trivially copyable variable.
+                auto x = RCORO(RC_VAR(a, A<int>(42)); (void)a; RC_YIELD(););
+                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+            }
+
+            { // Non-trivially copyable variable, but not visible at any yield points.
+                auto x = RCORO(RC_VAR(a, A<int>(42)); (void)a;);
+                // Currently those are taken into account, but we can change it later.
+                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+            }
+        }
     }
 
     { // A simple coroutine.
-        static auto x = RCORO({
+        auto x = RCORO({
             {
                 RC_VAR(a, A(10));
                 (void)a;
@@ -1103,6 +1126,30 @@ int main()
         lambda(std::false_type{}, std::true_type{}); // Copy assign.
         lambda(std::true_type{}, std::false_type{}); // Move construct.
         lambda(std::true_type{}, std::true_type{}); // Move assign.
+    }
+
+    { // Busy coroutines.
+        static std::function<void(int)> func;
+        auto x = RCORO({
+            func(0);
+            RC_VAR(a, int(42));
+            (void)a;
+            RC_YIELD("y");
+            func(1);
+        });
+        func = [&x](int yield_point)
+        {
+            (void)x.frame_storage(); // This shouldn't throw here.
+            ASSERT(x.busy());
+            ASSERT(x.yield_point() == yield_point);
+            ASSERT(x.yield_point_name() == (yield_point == 0 ? "" : "y"));
+            THROWS("busy", x.var_exists<"a">());
+            THROWS("busy", x.var<"a">());
+            THROWS("busy", x.reset());
+            THROWS("busy", x.rewind());
+            THROWS("busy", x.for_each_alive_var([](auto){return false;}));
+        };
+        x()();
     }
 
     std::cout << "OK\n";

@@ -26,6 +26,7 @@
 #include <iosfwd>
 #include <iterator>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <string_view>
 #include <string>
@@ -208,27 +209,42 @@ namespace rcoro
         using YieldName = typename TypeAt<N, typename T::_rcoro_yields>::type;
 
         // Stateful trick to store variable types.
-        template <typename T, int N>
+        // This is the only stateful storage that performs writes in both fake and non-fake instantiations,
+        // because the two types will be different if the type is defined locally (a lambda, a coroutine, or just a locally-defined class/enum),
+        // and we need both (fake for computing the variable offsets, and non-fake for everything else).
+        template <bool Fake, typename T, int N>
         struct VarTypeReader
         {
             DETAIL_RCORO_TEMPLATE_FRIEND(
-            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<T, N>);
+            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>);
             )
         };
-        template <typename T, int N, typename U>
+        constexpr void _adl_detail_rcoro_var_type() {} // Dummy ADL target.
+        template <bool Fake, typename T, int N>
+        using MaybeTentativeVarType = std::remove_pointer_t<decltype(_adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>{}))>;
+        template <typename T, int N>
+        using VarType = MaybeTentativeVarType<false, T, N>;
+        template <typename T, int N>
+        using TentativeVarType = MaybeTentativeVarType<true, T, N>;
+        template <bool Fake, typename T, int N, typename U>
         struct VarTypeWriter
         {
-            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<T, N>) {return (U *)nullptr;}
+            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>) {return (U *)nullptr;}
         };
-        template <typename T, int N>
+        template <typename T, int N, typename U>
+        struct VarTypeWriter<false, T, N, U>
+        {
+            // Make sure the new type is sufficiently similar to the tentative one.
+            static_assert(sizeof(U) == sizeof(TentativeVarType<T, N>) && alignof(U) == alignof(TentativeVarType<T, N>) && std::is_empty_v<U> == std::is_empty_v<TentativeVarType<T, N>>,
+                "You're doing something really stupid with the variable type.");
+            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<false, T, N>) {return (U *)nullptr;}
+        };
+        template <bool Fake, typename T, int N>
         struct VarTypeHelper
         {
-            template <typename U, typename = decltype(void(VarTypeWriter<T, N, std::decay_t<U>>{}))>
-            constexpr VarTypeHelper(U &&) {}
+            template <typename U, typename = decltype(void(VarTypeWriter<Fake, T, N, std::decay_t<U>>{}))>
+            constexpr VarTypeHelper(U *) {}
         };
-        constexpr void _adl_detail_rcoro_var_type() {} // Dummy ADL target.
-        template <typename T, int N>
-        using VarType = std::remove_pointer_t<decltype(_adl_detail_rcoro_var_type(VarTypeReader<T, N>{}))>;
 
         // Stateful trick to store var-to-var overlap data.
         template <typename T, int N>
@@ -320,19 +336,19 @@ namespace rcoro
         struct VarOffsetWriterAuto<true, T, N, M> : VarOffsetWriter<T, N,
             (
                 VarOffset<T, M-1>::value
-                + sizeof(VarType<T, M-1>)
+                + sizeof(TentativeVarType<T, M-1>)
                 // Prepare to divide, rounding up.
-                + alignof(VarType<T, N>)
+                + alignof(TentativeVarType<T, N>)
                 - 1
             )
-            / alignof(VarType<T, N>)
-            * alignof(VarType<T, N>)>
+            / alignof(TentativeVarType<T, N>)
+            * alignof(TentativeVarType<T, N>)>
         {};
 
         // The stack frame alignment.
         template <typename T>
         struct FrameAlignment : std::integral_constant<std::size_t, []<int ...I>(std::integer_sequence<int, I...>){
-            return std::max({alignof(char), alignof(VarType<T, I>)...});
+            return std::max({alignof(char), alignof(TentativeVarType<T, I>)...});
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         // The stack frame size.
         template <typename T>
@@ -341,7 +357,7 @@ namespace rcoro
         struct FrameSize<T> : std::integral_constant<std::size_t,
             (
                 VarOffset<T, NumVars<T>::value - 1>::value
-                + sizeof(VarType<T, NumVars<T>::value - 1>)
+                + sizeof(TentativeVarType<T, NumVars<T>::value - 1>)
                 // Prepare to divide, rounding up.
                 + FrameAlignment<T>::value
                 - 1
@@ -353,23 +369,23 @@ namespace rcoro
         // Inspect copyability of coroutine variables.
         template <typename T>
         struct FrameIsCopyConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return (std::is_copy_constructible_v<VarType<T, I>> && ...);
+            return (std::is_copy_constructible_v<TentativeVarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
         struct FrameIsMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return (std::is_move_constructible_v<VarType<T, I>> && ...);
+            return (std::is_move_constructible_v<TentativeVarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
         struct FrameIsNothrowCopyConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return (std::is_nothrow_copy_constructible_v<VarType<T, I>> && ...);
+            return (std::is_nothrow_copy_constructible_v<TentativeVarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
         struct FrameIsNothrowMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return (std::is_nothrow_move_constructible_v<VarType<T, I>> && ...);
+            return (std::is_nothrow_move_constructible_v<TentativeVarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
         template <typename T>
         struct FrameIsTriviallyCopyable : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
-            return (std::is_trivially_copyable_v<VarType<T, I>> && ...);
+            return (std::is_trivially_copyable_v<TentativeVarType<T, I>> && ...);
         }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
 
         // Stores coroutine variables and other state.
@@ -412,10 +428,6 @@ namespace rcoro
             // The current yield point.
             int pos = 0;
 
-            // In fake frames, initializing this type records the initializer type to the stateful storage.
-            template <int I>
-            using TypeForInit = VarType<T, I>;
-
             // Returns true if the variable `V` exists at the current yield point.
             template <int V>
             constexpr bool var_exists() const
@@ -431,9 +443,13 @@ namespace rcoro
                 return ret;
             }
 
+            // Get `V`th variable storage, as a void pointer. We need a separate version for `void *`,
+            // because when this is called, the actual variable type isn't known yet.
+            template <int V> constexpr       void *var_storage_untyped()       {return this->storage() + VarOffset<T, V>::value;}
+            template <int V> constexpr const void *var_storage_untyped() const {return this->storage() + VarOffset<T, V>::value;}
             // Get `V`th variable storage. Not laundered, so don't dereference.
-            template <int V> constexpr       VarType<T, V> *var_storage()       {return reinterpret_cast<      VarType<T, V> *>(this->storage() + VarOffset<T, V>::value);}
-            template <int V> constexpr const VarType<T, V> *var_storage() const {return reinterpret_cast<const VarType<T, V> *>(this->storage() + VarOffset<T, V>::value);}
+            template <int V> constexpr       VarType<T, V> *var_storage()       {return reinterpret_cast<      VarType<T, V> *>(var_storage_untyped<V>());}
+            template <int V> constexpr const VarType<T, V> *var_storage() const {return reinterpret_cast<const VarType<T, V> *>(var_storage_untyped<V>());}
 
             // Get `V`th variable. UB if it doesn't exist.
             template <int V> constexpr       VarType<T, V> &var()       {return *std::launder(var_storage<V>());}
@@ -611,29 +627,26 @@ namespace rcoro
             State state = State::reset;
             int pos = 0;
 
-            template <int I>
-            using TypeForInit = VarTypeHelper<T, I>;
-
             template <int V>
             constexpr bool var_exists()
             {
                 return false;
             }
             template <int V>
-            constexpr VarType<T, V> &var()
+            constexpr TentativeVarType<T, V> &var()
             {
-                return bad_ref<VarType<T, V>>();
+                return bad_ref<TentativeVarType<T, V>>();
             }
             template <int V>
-            constexpr void *var_storage()
+            constexpr void *var_storage_untyped()
             {
                 return nullptr;
             }
             template <int V>
-            constexpr VarType<T, V> &var_or_bad_ref(bool assume_good)
+            constexpr TentativeVarType<T, V> &var_or_bad_ref(bool assume_good)
             {
                 (void)assume_good;
-                return bad_ref<VarType<T, V>>();
+                return bad_ref<TentativeVarType<T, V>>();
             }
         };
 
@@ -651,6 +664,14 @@ namespace rcoro
                 if (frame && frame->state != State::pausing)
                     std::destroy_at(&frame->template var<I>());
             }
+        };
+        // We need a separate fake version, because `var<I>()` isn't ready yet, because the actual variable type isn't determined yet.
+        template <typename Frame, int I> requires Frame::fake
+        struct VarGuard<Frame, I>
+        {
+            constexpr VarGuard(Frame *) {}
+            VarGuard(const VarGuard &) = delete;
+            VarGuard &operator=(const VarGuard &) = delete;
         };
 
         // An array of pairs, mapping variable names to their indices.
@@ -1335,6 +1356,9 @@ namespace rcoro
         /* Here we form a member-pointer to `operator()` to instantiate it. Don't want to call it in `if (false)`, because we don't know what to pass to user parameters. */\
         /* This fails if there are any extra template parameters added by the user (i.e. implicitly, by using `auto` in parameters). */\
         (void)&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<true, _rcoro_Marker>>; \
+        /* The second pass instantiation. It would happen automatically when the coroutine is called, but then we miss out variable type information, */\
+        /* which we can't properly collect in the first pass. See `VarTypeReader` and others for details. */\
+        (void)&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<false, _rcoro_Marker>>; \
         struct _rcoro_Types \
         { \
             using _rcoro_marker_t [[maybe_unused]] = _rcoro_Marker; \
@@ -1425,7 +1449,7 @@ namespace rcoro
     else
 // Variable code pieces:
 #define DETAIL_RCORO_VAR_INIT(varindex, ...) \
-    (_rcoro_jump_to == 0 ? void(::new((void *)_rcoro_frame.template var_storage<varindex>()) typename _rcoro_frame_t::template TypeForInit<varindex>(__VA_ARGS__)) : void())
+    (_rcoro_jump_to == 0 ? void(::rcoro::detail::VarTypeHelper<_rcoro_frame_t::fake, _rcoro_Marker, varindex>(::new((void *)_rcoro_frame.template var_storage_untyped<varindex>()) auto(__VA_ARGS__))) : void())
 #define DETAIL_RCORO_VAR_GUARD(varindex, name) \
     ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template var_exists<varindex>() ? &_rcoro_frame : nullptr)
 #define DETAIL_RCORO_VAR_REF(varindex, name) \

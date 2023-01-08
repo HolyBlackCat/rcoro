@@ -219,16 +219,22 @@ enum class ops
 [[nodiscard]] constexpr ops operator|(ops a, ops b) {return ops(int(a) | int(b));}
 [[nodiscard]] constexpr ops operator~(ops a) {return ops(~int(a));}
 
+// Need a helper base because of a GCC bug: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=108335
 template <typename T, ops O>
-struct B : A<T>
+struct B_base : A<T>
 {
     using A<T>::A;
-    constexpr B(const B &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor))
+    constexpr B_base(const B_base &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor))
         : A<T>((O & ops::copy_ctor_throws) == ops::copy_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : other) {}
-    constexpr B(B &&other) noexcept((O & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) requires(bool(O & ops::move_ctor))
+    constexpr B_base(B_base &&other) noexcept((O & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) requires(bool(O & ops::move_ctor))
         : A<T>((O & ops::move_ctor_throws) == ops::move_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : std::move(other)) {}
-    constexpr B &operator=(const B &other) noexcept((O & ops::nothrow_copy_assign) == ops::nothrow_copy_assign) requires(bool(O & ops::copy_assign)) {static_cast<A<T> &>(*this) = other; return *this;}
-    constexpr B &operator=(B &&other) noexcept((O & ops::nothrow_move_assign) == ops::nothrow_move_assign) requires(bool(O & ops::move_assign)) {static_cast<A<T> &>(*this) = std::move(other); return *this;}
+    constexpr B_base &operator=(const B_base &other) noexcept((O & ops::nothrow_copy_assign) == ops::nothrow_copy_assign) requires(bool(O & ops::copy_assign)) {static_cast<A<T> &>(*this) = other; return *this;}
+    constexpr B_base &operator=(B_base &&other) noexcept((O & ops::nothrow_move_assign) == ops::nothrow_move_assign) requires(bool(O & ops::move_assign)) {static_cast<A<T> &>(*this) = std::move(other); return *this;}
+};
+template <typename T, ops O>
+struct B : B_base<T, O>
+{
+    using B_base<T, O>::B_base;
 };
 
 class Expect
@@ -348,7 +354,6 @@ int main()
     // * Test that we include all necessary headers.
     // * Test MSVC.
     // * Possible improvements:
-    //   * Allow local types as variable types (see `#if 0`-ed test below).
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
     //   * Noexcept checks and other stuff should ignore variables that aren't visible on any yield points.
 
@@ -668,7 +673,6 @@ int main()
         x(3, y, 4.5f);
     }
 
-    #if 0 // Those don't work yet, because the two different body instantiations see two different initializer types.
     { // Local types as variables.
         { // Local structs as variables.
             auto x = RCORO({
@@ -680,19 +684,28 @@ int main()
         }
 
         { // Lambdas as variables.
-            auto x = RCORO({
-                RC_VAR(a, []{});
-                a();
+            auto x = RCORO((int &out)
+            {
+                RC_VAR(y, 42);
+                RC_VAR(a, [&y]{return y;});
+                RC_YIELD();
+                out = a();
             });
-            x();
+            int out = 0;
+            x(out);
+            x(out);
+            ASSERT(out == 42);
         }
 
         { // Nested coroutines.
-            auto x = RCORO((int &f, int &g){
-                RC_VAR(y, RCORO((int &g){
+            auto x = RCORO((int &f, int &g)
+            {
+                RC_VAR(y, RCORO((int &g)
+                {
                     g = 1;
                     RC_YIELD();
                     g = 2;
+                    RC_YIELD();
                 }));
                 f = 3;
                 while (y(g)) RC_YIELD();
@@ -704,12 +717,14 @@ int main()
             int f = 0, g = 0;
             x(f, g);
             ASSERT(f == 3 && g == 1);
+            x(f, g);
             ASSERT(f == 3 && g == 2);
+            x(f, g);
             ASSERT(f == 4 && g == 1);
+            x(f, g);
             ASSERT(f == 4 && g == 2);
         }
     }
-    #endif
 
     { // User exceptions.
         { // Body throws.

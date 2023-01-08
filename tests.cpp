@@ -341,7 +341,6 @@ class Expect
 int main()
 {
     // * Deserialization from string.
-    // * Passing parameters.
     // * Serialization-deserialization tests.
     // * Strip `constexpr` that will never happen?
     // * Constexpr tests. (mostly `constinit`-ness?)

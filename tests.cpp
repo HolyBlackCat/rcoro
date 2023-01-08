@@ -452,6 +452,27 @@ int main()
             static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 1>{0});
         }
 
+        { // Ambiguous variable name.
+            auto x = RCORO({
+                {
+                    RC_VAR(a, 1);
+                    (void)a;
+                }
+                {
+                    RC_VAR(a, 2);
+                    (void)a;
+                }
+            });
+            using tag = decltype(x)::tag;
+            static_assert(rcoro::num_vars<tag> == 2);
+            THROWS("ambiguous", rcoro::var_index<tag>("a"));
+            THROWS("unknown", rcoro::var_index<tag>("?"));
+            static_assert(rcoro::var_index_or_negative<tag>("a") == rcoro::ambiguous_name);
+            static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
+            static_assert(rcoro::var_name<tag>(0) == "a");
+            static_assert(rcoro::var_name<tag>(1) == "a");
+        }
+
         { // `frame_is_trivially_copyable`
             { // Empty coroutine.
                 auto x = RCORO();

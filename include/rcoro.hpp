@@ -956,7 +956,8 @@ namespace rcoro
         // Runs a single step of the coroutine.
         // Returns `*this`. Note that the return value is convertible to bool, returning `!finished()`.
         // Throws if `can_resume() == false`.
-        constexpr coro &operator()() &
+        template <typename ...P> requires std::is_invocable_v<typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>
+        constexpr coro &operator()(P &&... params) &
         {
             if (!can_resume())
                 throw std::runtime_error("This coroutine can't be resumed. It's either finished or busy.");
@@ -981,7 +982,7 @@ namespace rcoro
 
             int jump_to = frame.pos;
 
-            typename T::_rcoro_lambda_t{}(frame, jump_to);
+            typename T::_rcoro_lambda_t{}(frame, jump_to, std::forward<P>(params)...);
 
             had_exception = false;
 
@@ -996,9 +997,10 @@ namespace rcoro
             }
             return *this;
         }
-        constexpr coro &&operator()() &&
+        template <typename ...P> requires std::is_invocable_v<typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>
+        constexpr coro &&operator()(P &&... params) &&
         {
-            operator()();
+            operator()(std::forward<P>(params)...);
             return std::move(*this);
         }
 
@@ -1320,21 +1322,19 @@ namespace rcoro
         }; \
         /* Fallback marker variables, used when checking reachibility from yield points. */\
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
-        auto _rcoro_lambda = [](auto &RC_RESTRICT _rcoro_frame, int _rcoro_jump_to) \
+        auto _rcoro_lambda = [](auto &RC_RESTRICT _rcoro_frame, int _rcoro_jump_to DETAIL_RCORO_LEADING_COMMA(DETAIL_RCORO_GET_PAR(DETAIL_RCORO_GET_PAR((__VA_ARGS__))))) \
         { \
             using _rcoro_frame_t [[maybe_unused]] = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
             if (_rcoro_jump_to != 0) \
                 goto _rcoro_label_i; \
-            SF_FOR_EACH(DETAIL_RCORO_CODEGEN_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, DETAIL_RCORO_CODEGEN_LOOP_FINAL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
+            SF_FOR_EACH(DETAIL_RCORO_CODEGEN_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, DETAIL_RCORO_CODEGEN_LOOP_FINAL, DETAIL_RCORO_LOOP_INIT_STATE, (firstcode,__VA_ARGS__)) \
         }; \
-        /* The first pass call, to calculate the stack frame layout. */\
+        /* The first pass instantiation, to calculate the stack frame layout. */\
         /* It also duplicates all of our warnings. */\
         /* GCC doesn't have a reasonable pragma to disable them, and Clang's pragma doesn't seem to work in a macro (hmm). */\
-        if (false) \
-        { \
-            ::rcoro::detail::Frame<true, _rcoro_Marker> _rcoro_fake_frame; \
-            _rcoro_lambda(_rcoro_fake_frame, 0); \
-        } \
+        /* Here we form a member-pointer to `operator()` to instantiate it. Don't want to call it in `if (false)`, because we don't know what to pass to user parameters. */\
+        /* This fails if there are any extra template parameters added by the user (i.e. implicitly, by using `auto` in parameters). */\
+        (void)&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<true, _rcoro_Marker>>; \
         struct _rcoro_Types \
         { \
             using _rcoro_marker_t [[maybe_unused]] = _rcoro_Marker; \
@@ -1347,6 +1347,7 @@ namespace rcoro
 #define DETAIL_RCORO_NULL(...)
 #define DETAIL_RCORO_IDENTITY(...) __VA_ARGS__
 #define DETAIL_RCORO_CALL(m, ...) m(__VA_ARGS__)
+#define DETAIL_RCORO_LEADING_COMMA(...) __VA_OPT__(, __VA_ARGS__)
 
 // Given `(a)b`, returns `b`. Otherwise returns the argument unchanged.
 #define DETAIL_RCORO_SKIP_PAR(...) DETAIL_RCORO_SKIP_PAR_END(DETAIL_RCORO_SKIP_PAR_ __VA_ARGS__)
@@ -1379,13 +1380,15 @@ namespace rcoro
 
 // An universal step function for our loops.
 #define DETAIL_RCORO_LOOP_STEP(n, d, kind, ...) SF_CAT(DETAIL_RCORO_LOOP_STEP_, kind) d
-#define DETAIL_RCORO_LOOP_STEP_code(ident, yieldindex, varindex, markers)    (       ident    , yieldindex  , varindex  , markers)
-#define DETAIL_RCORO_LOOP_STEP_var(ident, yieldindex, varindex, markers)     (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
-#define DETAIL_RCORO_LOOP_STEP_withvar(ident, yieldindex, varindex, markers) (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
-#define DETAIL_RCORO_LOOP_STEP_yield(ident, yieldindex, varindex, markers)   (SF_CAT(ident, i), yieldindex+1, varindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_firstcode(ident, yieldindex, varindex, markers) (       ident    , yieldindex  , varindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_code(ident, yieldindex, varindex, markers)      (       ident    , yieldindex  , varindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_var(ident, yieldindex, varindex, markers)       (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
+#define DETAIL_RCORO_LOOP_STEP_withvar(ident, yieldindex, varindex, markers)   (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
+#define DETAIL_RCORO_LOOP_STEP_yield(ident, yieldindex, varindex, markers)     (SF_CAT(ident, i), yieldindex+1, varindex  , markers)
 
 // The loop body for the function body generation.
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_CODEGEN_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_firstcode(ident, yieldindex, varindex, markers, ...) DETAIL_RCORO_SKIP_PAR(__VA_ARGS__) // Skip optional parameters.
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...) __VA_ARGS__
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) \
   SF_CAT(_rcoro_label_, ident): \

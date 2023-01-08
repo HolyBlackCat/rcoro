@@ -348,6 +348,7 @@ int main()
     // * Test that we include all necessary headers.
     // * Test MSVC.
     // * Possible improvements:
+    //   * Allow local types as variable types (see `#if 0`-ed test below).
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
     //   * Noexcept checks and other stuff should ignore variables that aren't visible on any yield points.
 
@@ -479,6 +480,7 @@ int main()
 
     { // A simple coroutine.
         auto x = RCORO({
+            // 1,2,3;
             {
                 RC_VAR(a, A(10));
                 (void)a;
@@ -650,6 +652,64 @@ int main()
             x.rewind();
         }
     }
+
+    { // Parameter passing.
+        auto x = RCORO((int x, int &y, float &&z)
+        {
+            ASSERT(x == 1 && y == 2 && z == 2.5f);
+            RC_YIELD();
+            ASSERT(x == 3 && y == 4 && z == 4.5f);
+        }
+        (void)1, (void)2; // While we're at it, test that top-level commas are parsed correctly.
+        );
+        int y = 2;
+        x(1, y, 2.5f);
+        y = 4;
+        x(3, y, 4.5f);
+    }
+
+    #if 0 // Those don't work yet, because the two different body instantiations see two different initializer types.
+    { // Local types as variables.
+        { // Local structs as variables.
+            auto x = RCORO({
+                struct A {};
+                RC_VAR(a, A{});
+                (void)a;
+            });
+            x();
+        }
+
+        { // Lambdas as variables.
+            auto x = RCORO({
+                RC_VAR(a, []{});
+                a();
+            });
+            x();
+        }
+
+        { // Nested coroutines.
+            auto x = RCORO((int &f, int &g){
+                RC_VAR(y, RCORO((int &g){
+                    g = 1;
+                    RC_YIELD();
+                    g = 2;
+                }));
+                f = 3;
+                while (y(g)) RC_YIELD();
+                y.rewind();
+                f = 4;
+                while (y(g)) RC_YIELD();
+            });
+
+            int f = 0, g = 0;
+            x(f, g);
+            ASSERT(f == 3 && g == 1);
+            ASSERT(f == 3 && g == 2);
+            ASSERT(f == 4 && g == 1);
+            ASSERT(f == 4 && g == 2);
+        }
+    }
+    #endif
 
     { // User exceptions.
         { // Body throws.

@@ -342,8 +342,6 @@ int main()
 {
     // * Deserialization from string.
     // * Serialization-deserialization tests.
-    // * Strip `constexpr` that will never happen?
-    // * Constexpr tests. (mostly `constinit`-ness?)
     // * Transition away from `::tag`, accept `coro<T>` directly?
     // * CI
     // * Test that we include all necessary headers.
@@ -666,6 +664,55 @@ int main()
         x(1, y, 2.5f);
         y = 4;
         x(3, y, 4.5f);
+    }
+
+    { // Constexpr-ness.
+        auto prototype = RCORO( // This isn't constexpr merely because we have `goto` inside. This should be fixed in C++23.
+            RC_VAR(a, 42);
+            (void)a;
+            RC_YIELD();
+        );
+        constexpr auto x = []{
+            auto x = decltype(prototype){};
+            auto y(x);
+            x = y;
+            auto z(std::move(x));
+            x = std::move(z);
+            x.reset();
+            x.rewind();
+            ASSERT(!x.var_exists<"a">());
+            ASSERT(!x.busy());
+            ASSERT(!x.finished());
+            ASSERT(x.finish_reason() == rcoro::finish_reason::not_finished);
+            ASSERT(x.yield_point() == 0);
+            ASSERT(x.yield_point_name() == "");
+            return x;
+        }();
+
+        #if 0 // This might never happen, because `goto` is still not allowed in constexpr as of C++23 (allowed only if not executed).
+        { // Execution.
+            { // Without variables.
+                constexpr int sum = []{
+                    int sum = 0;
+
+                    auto x = RCORO((int &value)
+                    {
+                        value = 1;
+                        RC_YIELD();
+                        value = 2;
+                        RC_YIELD();
+                        value = 3;
+                        RC_YIELD();
+                    });
+                    for (int value{}; x(value);)
+                        sum += value;
+
+                    return sum;
+                }();
+                static_assert(sum == 6);
+            }
+        }
+        #endif
     }
 
     { // Local types as variables.

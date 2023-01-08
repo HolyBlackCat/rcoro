@@ -482,7 +482,7 @@ namespace rcoro
             }
 
             // Cleans the frame.
-            void reset() noexcept
+            constexpr void reset() noexcept
             {
                 if (state >= State::_busy)
                     RC_ABORT("Can't reset a busy coroutine.");
@@ -599,7 +599,7 @@ namespace rcoro
                 struct Guard
                 {
                     Frame &other;
-                    ~Guard()
+                    constexpr ~Guard()
                     {
                         other.reset();
                     }
@@ -1001,7 +1001,7 @@ namespace rcoro
             {
                 coro &self;
                 bool &had_exception;
-                ~Guard()
+                constexpr ~Guard()
                 {
                     if (had_exception)
                     {

@@ -60,6 +60,17 @@
 #define RC_RESTRICT __restrict // There's also `__restrict__`, but that doesn't work on MSVC.
 #endif
 
+// An assumption.
+#ifndef RC_ASSUME
+#if defined(__clang__)
+#define RC_ASSUME(...) __builtin_assume(__VA_ARGS__)
+#elif defined(_MSC_VER)
+#define RC_ASSUME(...) __assume(__VA_ARGS__)
+#else
+#define RC_ASSUME(...) (__VA_ARGS__ ? void() : __builtin_unreachable())
+#endif
+#endif
+
 // Silences GCC's silly `-Wnon-template-friend` warning.
 #ifndef DETAIL_RCORO_TEMPLATE_FRIEND
 #if defined(__GNUC__) && !defined(__clang__)
@@ -1345,6 +1356,7 @@ namespace rcoro
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
         auto _rcoro_lambda = [](auto &RC_RESTRICT _rcoro_frame, int _rcoro_jump_to DETAIL_RCORO_LEADING_COMMA(DETAIL_RCORO_GET_PAR(DETAIL_RCORO_GET_PAR((__VA_ARGS__))))) \
         { \
+            RC_ASSUME(_rcoro_jump_to >= 0 && _rcoro_jump_to < _rcoro_Marker::_rcoro_yields::size); \
             using _rcoro_frame_t [[maybe_unused]] = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
             if (_rcoro_jump_to != 0) \
                 goto _rcoro_label_i; \
@@ -1415,7 +1427,6 @@ namespace rcoro
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_firstcode(ident, yieldindex, varindex, markers, ...) DETAIL_RCORO_SKIP_PAR(__VA_ARGS__) // Skip optional parameters.
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...) __VA_ARGS__
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) \
-  SF_CAT(_rcoro_label_, ident): \
     /* Make sure we're not preceded by an if/for/while/etc. */\
     /* The test is performed by having two separate statements, where the latter needs the former to be visible to compile. */\
     /* Note that `[[maybe_unused]]` is not strictly necessary, but it removes an extra useless warning when this check fails. */\
@@ -1424,6 +1435,9 @@ namespace rcoro
     [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
     /* If we're not jumping, initialize the variable. */\
     DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__); \
+    /* Jump target. */\
+  SF_CAT(_rcoro_label_, ident): \
+    /* This will destroy the variable when it goes out of scope. */\
     DETAIL_RCORO_VAR_GUARD(varindex, name); \
     /* Create a reference as a fancy name for our storage variable. */\
     DETAIL_RCORO_VAR_REF(varindex, name); \
@@ -1438,8 +1452,9 @@ namespace rcoro
     /* Force trailing semicolon. */\
     void()
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) \
+    if (void(DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__)), false) {} else \
   SF_CAT(_rcoro_label_, ident): \
-    if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__), false) {} else \
+    if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
     if (DETAIL_RCORO_VAR_GUARD(varindex, name); false) {} else \
     if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != 0) \
     { \
@@ -1449,11 +1464,11 @@ namespace rcoro
     else
 // Variable code pieces:
 #define DETAIL_RCORO_VAR_INIT(varindex, ...) \
-    (_rcoro_jump_to == 0 ? void(::rcoro::detail::VarTypeHelper<_rcoro_frame_t::fake, _rcoro_Marker, varindex>(::new((void *)_rcoro_frame.template var_storage_untyped<varindex>()) auto(__VA_ARGS__))) : void())
+    ::rcoro::detail::VarTypeHelper<_rcoro_frame_t::fake, _rcoro_Marker, varindex>(::new((void *)_rcoro_frame.template var_storage_untyped<varindex>()) auto(__VA_ARGS__))
 #define DETAIL_RCORO_VAR_GUARD(varindex, name) \
     ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template var_exists<varindex>() ? &_rcoro_frame : nullptr)
 #define DETAIL_RCORO_VAR_REF(varindex, name) \
-    auto &name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
+    auto &RC_RESTRICT name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
 #define DETAIL_RCORO_VAR_META(varindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
     (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \

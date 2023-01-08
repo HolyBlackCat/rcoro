@@ -340,10 +340,6 @@ class Expect
 
 int main()
 {
-    // * __restrict on variable refs?
-    // * __builtin_assume on jump_to?
-    // * remove condition on ::new by moving it before the label?
-
     // * Deserialization from string.
     // * Passing parameters.
     // * Serialization-deserialization tests.

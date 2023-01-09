@@ -112,10 +112,10 @@ namespace rcoro
     {
         // Don't reorder the first two, this allows casting booleans to `finish_reason`.
         not_finished = 0, // We're not actually finsihed.
-        reset = 1, // Wasn't executing in the first place.
+        reset = 1, // The default finish reason for any coroutine that didn't finish naturally.
         success, // Finished normally.
         exception, // Finished because of an exception.
-        _count,
+        _count [[maybe_unused]],
     };
 
     namespace detail
@@ -931,7 +931,7 @@ namespace rcoro
         constexpr coro(rewind_tag_t) {rewind();}
 
         // Copyable and movable, assuming all the elements are.
-        // Copying, moving, and destroying aborts the program if any of the involved coroutines are `busy()`.
+        // Copying, moving, and destroying abort the program if any of the involved coroutines are `busy()`.
         // Can't use exceptions for those errors, because then we lose `noexcept`ness (and using them only if `noexcept` is missing is lame).
 
         // Resets the coroutine to the initial position.
@@ -1119,21 +1119,22 @@ namespace rcoro
         // Calls `reset()`.
         // Validates `fin_reason` and `yield_index`, throws if they are out of range. Also throws if `fin_reason != not_finished && yield_index != 0`.
         // Calls `func`, which is `bool func()`. If it returns false, stops immediately and also returns false.
-        // `func` is supposed to load the variables into `stack_frame()`, or throw or return false on failure.
+        // `func` is supposed to load the variables into `frame_storage()` as raw bytes, or throw or return false on failure.
         // Applies `fin_reason` and `yield_index`, then returns true.
         // The `func` can be empty and always return true, if you load the variables beforehand.
         template <typename F>
         requires frame_is_trivially_copyable<T>
-        constexpr bool load_uninitialized(rcoro::finish_reason fin_reason, int yield_index, F &&func)
+        constexpr bool load_raw_bytes(rcoro::finish_reason fin_reason, int yield_index, F &&func)
         {
-            return load_uninitialized_UNSAFE(fin_reason, yield_index, std::forward<F>(func));
+            return load_raw_bytes_UNSAFE(fin_reason, yield_index, std::forward<F>(func));
         }
 
-        // Same as `load_uninitialized`, but compiles for any variable types (compiles even if `frame_is_trivially_copyable<T>` is false).
+        // Same as `load_raw_bytes`, but compiles for any variable types (compiles even if `frame_is_trivially_copyable<T>` is false).
         // Warning! If `func` returns true, it must placement-new all the `yield_vars` into the `frame_storage()`, otherwise UB ensues.
         // And if `func` returns false or throws, it must not leave any variables alive.
+        // The recommended way of creating the variables is `::new((void *)((char *)frame_storage() + rcoro::var_offset<tag, i>)) type(init);`.
         template <typename F>
-        constexpr bool load_uninitialized_UNSAFE(rcoro::finish_reason fin_reason, int yield_index, F &&func)
+        constexpr bool load_raw_bytes_UNSAFE(rcoro::finish_reason fin_reason, int yield_index, F &&func)
         {
             reset();
             if (fin_reason < rcoro::finish_reason{} || fin_reason >= rcoro::finish_reason::_count)

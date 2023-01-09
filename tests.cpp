@@ -1394,5 +1394,153 @@ int main()
         }
     }
 
+    { // Deserialization.
+        { // `load_raw_bytes_UNSAFE`.
+            auto x = RCORO({
+                RC_YIELD();
+                {
+                    RC_VAR(unused, A(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                }
+
+                RC_VAR(a, A(short(1))); (void)a;
+                RC_VAR(b, A(long(2))); (void)b;
+                RC_VAR(c, A(int(3))); (void)c;
+                RC_YIELD();
+            });
+
+            { // Failures.
+                Expect ex(""); // Nothing here should create objects.
+
+                // Finish reason too small.
+                x.rewind()();
+                THROWS("finish reason is out of range", x.load_raw_bytes_UNSAFE(rcoro::finish_reason(-1), 0, []{return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+
+                // Finish reason too big.
+                x.rewind()();
+                THROWS("finish reason is out of range", x.load_raw_bytes_UNSAFE(rcoro::finish_reason(rcoro::finish_reason::_count), 0, []{return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+
+                // Yield point too small.
+                x.rewind()();
+                THROWS("yield point index is out of range", x.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, -1, []{return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+
+                // Yield point too big.
+                x.rewind()();
+                THROWS("yield point index is out of range", x.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, rcoro::num_yields<decltype(x)::tag>, []{return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+
+                // Yield point is not zero, even though we're finished.
+                x.rewind()();
+                THROWS("must be 0", x.load_raw_bytes_UNSAFE(rcoro::finish_reason::reset, 1, []{return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+
+                // Callback returns false.
+                x.rewind()();
+                ASSERT(!x.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 1, []{return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+
+                // Callback throws.
+                x.rewind()();
+                THROWS("test!", x.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 1, []{throw std::runtime_error("test!"); return false;}));
+                ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
+            }
+
+            { // Successful loads.
+                { // Finished.
+                    Expect ex("");
+
+                    decltype(x) y(rcoro::rewind);
+                    y();
+
+                    y.load_raw_bytes_UNSAFE(rcoro::finish_reason::exception, 0, []{return true;});
+                    ASSERT(y.finished());
+                    ASSERT(y.finish_reason() == rcoro::finish_reason::exception);
+                    ASSERT(y.yield_point() == 0);
+                }
+
+                { // Not started.
+                    Expect ex("");
+
+                    decltype(x) y(rcoro::rewind);
+                    y();
+
+                    y.rewind()();
+                    y.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 0, []{return true;});
+                    ASSERT(!y.finished());
+                    ASSERT(y.yield_point() == 0);
+                }
+
+                { // Started and have variables.
+                    Expect ex(R"(
+                        A<long>::A(2)
+                        A<short>::A(1)
+                        A<int>::A(3)
+                        ... done loading
+                        A<int>::~A(3)
+                        A<long>::~A(2)
+                        A<short>::~A(1)
+                    )");
+
+                    decltype(x) y(rcoro::rewind);
+                    y();
+
+                    y.rewind()();
+                    y.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 2, [&]
+                    {
+                        // Create out of order for test purposes, why not.
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 2>)) A<long>(2);
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 1>)) A<short>(1);
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 3>)) A<int>(3);
+                        return true;
+                    });
+                    ASSERT(!y.finished());
+                    ASSERT(y.yield_point() == 2);
+                    *test_detail::a_log += "... done loading\n";
+                }
+            }
+        }
+
+        { // `load_raw_bytes`.
+            // We already have a proper test for the `_UNSAFE` version, so we just do a bare minimum.
+            auto x = RCORO((int &out)
+            {
+                {
+                    RC_VAR(unused, int(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                }
+
+                RC_VAR(x, 0);
+                RC_YIELD();
+                out = x * 10;
+
+                RC_VAR(dummy, 42); (void)dummy;
+                RC_YIELD();
+            });
+
+            ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 1, [&]
+            {
+                int value = 42;
+                std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x)::tag, 1>, &value, sizeof(int));
+                return true;
+            }));
+
+            int result = 0;
+            x(result);
+            ASSERT(result == 420);
+
+            { // The same thing again, but make sure that we can load the variables before calling `load_raw_bytes`.
+                x.rewind()(result)(result);
+                int value = 43;
+                std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x)::tag, 1>, &value, sizeof(int));
+                ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 1, []{return true;}));
+
+                result = 0;
+                x(result);
+                ASSERT(result == 430);
+            }
+        }
+    }
+
     std::cout << "OK\n";
 }

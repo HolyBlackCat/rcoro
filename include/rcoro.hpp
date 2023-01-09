@@ -500,10 +500,11 @@ namespace rcoro
                 }
             };
 
-            // `func` is `bool func(auto index)`, `rollback` is `void rollback(auto index)`, where `index` is `std::integral_constant<int, I>`.
+            // `func` is `bool func(auto index, auto completed)`, `rollback` is `void rollback(auto index)`, where `index` is `std::integral_constant<int, I>`.
             // `func` is called for every variable index for yield point `pos`.
             // If it throws or returns true, `rollback` is called for every index processed so far, in reverse.
             // If `func` returned true, the whole function also returns true.
+            // `completed` should normally be ignored. It can be called at most once. If you then throw or return true, the current iteration will be rolled back as well.
             template <typename F, typename G>
             static constexpr bool handle_vars(int pos, F &&func, G &&rollback)
             {
@@ -518,8 +519,15 @@ namespace rcoro
 
                     bool fail = const_any_of<indices.size()>([&](auto var)
                     {
-                        bool stop = func(std::integral_constant<int, indices[var.value]>{});
-                        guard.i++;
+                        bool already_incremented = false;
+                        bool stop = func(std::integral_constant<int, indices[var.value]>{}, [&]{
+                            if (already_incremented)
+                                return;
+                            already_incremented = true;
+                            guard.i++;
+                        });
+                        if (!stop && !already_incremented)
+                            guard.i++;
                         return stop;
                     });
                     ret = guard.failed = fail;
@@ -548,7 +556,7 @@ namespace rcoro
                     RC_ABORT("Can't copy a busy coroutine.");
                 reset();
                 handle_vars(other.pos,
-                    [&](auto index)
+                    [&](auto index, auto)
                     {
                         constexpr int i = index.value;
                         std::construct_at(var_storage<i>(), other.template var<i>()); // GCC 11 needs `template` here.
@@ -585,7 +593,7 @@ namespace rcoro
                 Guard guard{.other = other};
 
                 handle_vars(other.pos,
-                    [&](auto index)
+                    [&](auto index, auto)
                     {
                         constexpr int i = index.value;
                         std::construct_at(var_storage<i>(), std::move(other.template var<i>())); // GCC 11 needs `template` here.
@@ -1151,8 +1159,7 @@ namespace rcoro
         }
 
         // Switches the coroutine to a custom state.
-        // Throws if `fin_reason` is out of range.
-        // If `fin_reason != not_finished`, throws if `yield_index` is not `0`.
+        // Throws if `fin_reason` or `yield_index` are invalid, see `load_raw_bytes` for how they're validated.
         // `func` is then called for every variable existing at that yield point.
         // `func` is `void func(auto index, auto construct)`, where `index` is the variable index in form of `std::integral_constant<int, N>`,
         // and `construct` is `void construct(auto &&...)`. `construct` must be called at most once to construct the variable. Throws if it's called more than once.
@@ -1161,33 +1168,29 @@ namespace rcoro
         template <typename F>
         constexpr bool load(rcoro::finish_reason fin_reason, int yield_index, F &&func)
         {
-            reset();
-
-            bool fail = frame.handle_vars(
-                yield_index,
-                [&](auto varindex)
-                {
-                    bool ok = false;
-                    func(varindex, [&]<typename ...P>(P &&... params)
-                    {
-                        if (ok)
-                            throw std::runtime_error("Coroutine `load()` user callback must call the callback it receives at most once.");
-                        std::construct_at(frame.template var_storage<varindex.value>(), std::forward<P>(params)...);
-                        ok = true;
-                    });
-                    return !ok;
-                },
-                [&](auto varindex) noexcept
-                {
-                    std::destroy_at(&frame.template var<varindex.value>());
-                }
-            );
-            if (!fail)
+            return load_raw_bytes_UNSAFE(fin_reason, yield_index, [&]
             {
-                frame.pos = yield_index;
-                frame.state = detail::State(fin_reason);
-            }
-            return !fail;
+                return !frame.handle_vars(
+                    yield_index,
+                    [&](auto varindex, auto completed)
+                    {
+                        bool ok = false;
+                        func(varindex, [&]<typename ...P>(P &&... params)
+                        {
+                            if (ok)
+                                throw std::runtime_error("Coroutine `load()` user callback must call the callback it receives at most once.");
+                            std::construct_at(frame.template var_storage<varindex.value>(), std::forward<P>(params)...);
+                            completed(); // Now `handle_vars` will clean up this var too if something goes wrong.
+                            ok = true;
+                        });
+                        return !ok;
+                    },
+                    [&](auto varindex) noexcept
+                    {
+                        std::destroy_at(&frame.template var<varindex.value>());
+                    }
+                );
+            });
         }
 
 

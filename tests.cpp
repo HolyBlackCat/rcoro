@@ -141,7 +141,8 @@ class A
     T value{};
 
   public:
-    A(T new_value)
+    template <typename U> requires std::is_same_v<T, U>
+    A(U new_value)
     {
         *test_detail::a_log += std::string(test_detail::get_type_name<A>()) + "::A(" + std::to_string(new_value) + ")";
         *test_detail::a_log += "   # " + std::to_string(std::uintptr_t(this)) + "\n";
@@ -200,6 +201,7 @@ class A
         return value;
     }
 };
+template <typename T> A(T) -> A<T>;
 
 enum class ops
 {
@@ -510,7 +512,7 @@ int main()
                 RC_YIELD("f");
             }
 
-            RC_FOR((c, A(char{})); char(c) < 3; c = char(c)+1)
+            RC_FOR((c, A(char{})); char(c) < 3; c = char(char(c)+1))
             {
                 RC_WITH_VAR(d,A(short(30)))
                 {
@@ -1490,9 +1492,9 @@ int main()
                     y.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 2, [&]
                     {
                         // Create out of order for test purposes, why not.
-                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 2>)) A<long>(2);
-                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 1>)) A<short>(1);
-                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 3>)) A<int>(3);
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 2>)) A(long(2));
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 1>)) A(short(1));
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 3>)) A(int(3));
                         return true;
                     });
                     ASSERT(!y.finished());
@@ -1538,6 +1540,214 @@ int main()
                 result = 0;
                 x(result);
                 ASSERT(result == 430);
+            }
+        }
+
+        { // `load`.
+            auto x = RCORO({
+                RC_YIELD();
+
+                {
+                    RC_VAR(unused, A(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                }
+
+                RC_VAR(a, A(short(1))); (void)a;
+                RC_VAR(b, A(long(2))); (void)b;
+                RC_VAR(c, A(int(3))); (void)c;
+                RC_YIELD();
+            });
+
+            { // Finish reason and yield index validation.
+                // A minimal test, because we already use `load_raw_bytes_UNSAFE` under the hood.
+
+                Expect ex("");
+
+                decltype(x) y(rcoro::rewind);
+                y();
+
+                THROWS("finish reason is out of range", y.load(rcoro::finish_reason(-1), 0, [](auto, auto){}));
+                ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset);
+            }
+
+            { // Successful loads.
+                { // Yield point with variables.
+                    Expect ex(R"(
+                        ... 1
+                        A<short>::A(10)
+                        ... 2
+                        A<long>::A(20)
+                        ... 3
+                        A<int>::A(30)
+                        ... done
+                        A<int>::~A(30)
+                        A<long>::~A(20)
+                        A<short>::~A(10)
+                    )");
+
+                    decltype(x) y;
+                    ASSERT(y.load({}, 2, [](auto index, auto construct)
+                    {
+                        *test_detail::a_log += "... " + std::to_string(index.value) + '\n';
+
+                        if constexpr (index.value == 1)
+                            construct(short(10));
+                        else if constexpr (index.value == 2)
+                            construct(long(20));
+                        else if constexpr (index.value == 3)
+                            construct(int(30));
+                        else
+                            FAIL("Wrong variable index.");
+                    }));
+                    *test_detail::a_log += "... done\n";
+
+                    ASSERT(!y.finished() && y.yield_point() == 2);
+                    ASSERT(short(y.var<"a">()) == 10);
+                    ASSERT(long(y.var<"b">()) == 20);
+                    ASSERT(int(y.var<"c">()) == 30);
+                }
+
+                { // At initial yield point.
+                    Expect ex("");
+                    decltype(x) y;
+                    ASSERT(y.load({}, 0, [](auto, auto)
+                    {
+                        FAIL("This shouldn't be called.");
+                    }));
+
+                    ASSERT(!y.finished() && y.yield_point() == 0);
+                }
+
+                { // Finished.
+                    Expect ex("");
+                    decltype(x) y;
+                    y.load(rcoro::finish_reason::exception, 0, [](auto, auto)
+                    {
+                        FAIL("This shouldn't be called.");
+                    });
+
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::exception && y.yield_point() == 0);
+                }
+
+                { // Coroutine without variables.
+                    auto z = RCORO(RC_YIELD(););
+
+                    Expect ex("");
+                    ASSERT(z.load(rcoro::finish_reason::not_finished, 1, [](auto, auto)
+                    {
+                        FAIL("This shouldn't be called.");
+                    }));
+
+                    ASSERT(!z.finished() && z.yield_point() == 1);
+                }
+            }
+
+            { // Failures.
+                { // Manual abort.
+                    Expect ex(R"(
+                        A<short>::A(10)
+                        A<long>::A(20)
+                        aborting!
+                        A<long>::~A(20)
+                        A<short>::~A(10)
+                        ... done
+                    )");
+
+                    decltype(x) y;
+                    ASSERT(!y.load({}, 2, [](auto index, auto construct)
+                    {
+                        if constexpr (index.value == 1)
+                            construct(short(10));
+                        else if constexpr (index.value == 2)
+                            construct(long(20));
+                        else if constexpr (index.value == 3)
+                            *test_detail::a_log += "aborting!\n"; // Not calling `construct` to abort.
+                        else
+                            FAIL("Wrong variable index.");
+                    }));
+                    *test_detail::a_log += "... done\n";
+                }
+
+                { // Exception.
+                    Expect ex(R"(
+                        A<short>::A(10)
+                        A<long>::A(20)
+                        throw!
+                        A<long>::~A(20)
+                        A<short>::~A(10)
+                        ... done
+                    )");
+
+                    decltype(x) y;
+                    THROWS("test!", !y.load({}, 2, [](auto index, auto construct)
+                    {
+                        if constexpr (index.value == 1)
+                            construct(short(10));
+                        else if constexpr (index.value == 2)
+                            construct(long(20));
+                        else if constexpr (index.value == 3)
+                        {
+                            *test_detail::a_log += "throw!\n";
+                            throw std::runtime_error("test!");
+                        }
+                        else
+                            FAIL("Wrong variable index.");
+                    }));
+                    *test_detail::a_log += "... done\n";
+                }
+
+                { // Exception after calling `construct()`.
+                    Expect ex(R"(
+                        A<short>::A(10)
+                        A<long>::A(20)
+                        throw!
+                        A<long>::~A(20)
+                        A<short>::~A(10)
+                        ... done
+                    )");
+
+                    decltype(x) y;
+                    THROWS("test!", !y.load({}, 2, [](auto index, auto construct)
+                    {
+                        if constexpr (index.value == 1)
+                            construct(short(10));
+                        else if constexpr (index.value == 2)
+                        {
+                            construct(long(20));
+                            *test_detail::a_log += "throw!\n";
+                            throw std::runtime_error("test!");
+                        }
+                        else
+                            FAIL("Wrong variable index.");
+                    }));
+                    *test_detail::a_log += "... done\n";
+                }
+
+                { // Calling `construct()` twice.
+                    Expect ex(R"(
+                        A<short>::A(10)
+                        A<long>::A(20)
+                        calling again...
+                        A<long>::~A(20)
+                        A<short>::~A(10)
+                        ... done
+                    )");
+
+                    decltype(x) y;
+                    THROWS("at most once", !y.load({}, 2, [](auto index, auto construct)
+                    {
+                        if constexpr (index.value == 1)
+                            construct(short(10));
+                        else if constexpr (index.value == 2)
+                        {
+                            construct(long(20));
+                            *test_detail::a_log += "calling again...\n";
+                            construct(long(200));
+                        }
+                        else
+                            FAIL("Wrong variable index.");
+                    }));
+                    *test_detail::a_log += "... done\n";
+                }
             }
         }
     }

@@ -1366,7 +1366,7 @@ namespace rcoro
         /* It also duplicates all of our warnings. */\
         /* GCC doesn't have a reasonable pragma to disable them, and Clang's pragma doesn't seem to work in a macro (hmm). */\
         /* Here we form a member-pointer to `operator()` to instantiate it. Don't want to call it in `if (false)`, because we don't know what to pass to user parameters. */\
-        /* This fails if there are any extra template parameters added by the user (i.e. implicitly, by using `auto` in parameters). */\
+        /* This also conveniently fails if there are any extra template parameters added by the user (i.e. implicitly, by using `auto` in parameters). */\
         (void)&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<true, _rcoro_Marker>>; \
         /* The second pass instantiation. It would happen automatically when the coroutine is called, but then we miss out variable type information, */\
         /* which we can't properly collect in the first pass. See `VarTypeReader` and others for details. */\

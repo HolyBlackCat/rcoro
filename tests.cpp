@@ -1290,5 +1290,109 @@ int main()
         x()();
     }
 
+    { // Variable access.
+        { // Basic checks.
+            auto x = RCORO({
+                {
+                    RC_VAR(a, int{}); // Skip index 0 to catch more bugs.
+                    (void)a;
+                }
+
+                RC_VAR(b, short(1));
+                (void)b;
+                RC_YIELD();
+                RC_VAR(c, long(2));
+                (void)c;
+                RC_YIELD();
+            });
+
+            static_assert(std::is_same_v<decltype(              x .var<"a">()),       int   &>);
+            static_assert(std::is_same_v<decltype(std::as_const(x).var<"a">()), const int   &>);
+            static_assert(std::is_same_v<decltype(              x .var<"b">()),       short &>);
+            static_assert(std::is_same_v<decltype(std::as_const(x).var<"b">()), const short &>);
+            static_assert(std::is_same_v<decltype(              x .var<"c">()),       long  &>);
+            static_assert(std::is_same_v<decltype(std::as_const(x).var<"c">()), const long  &>);
+
+            std::string vars;
+
+            ASSERT(!x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">());
+            THROWS("doesn't exist", x.var<"a">());
+            THROWS("doesn't exist", x.var<"b">());
+            THROWS("doesn't exist", x.var<"c">());
+            vars.clear();
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "");
+
+            x();
+
+            ASSERT(!x.var_exists<"a">() && x.var_exists<"b">() && !x.var_exists<"c">());
+            ASSERT(x.var<"b">() == 1);
+            x.var<"b">() += 10;
+            ASSERT(x.var<"b">() == 11);
+            THROWS("doesn't exist", x.var<"a">());
+            THROWS("doesn't exist", x.var<"c">());
+            vars.clear();
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "b");
+
+            x();
+
+            ASSERT(!x.var_exists<"a">() && x.var_exists<"b">() && x.var_exists<"c">());
+            ASSERT(x.var<"b">() == 11);
+            x.var<"b">() += 10;
+            ASSERT(x.var<"b">() == 21);
+            ASSERT(x.var<"c">() == 2);
+            x.var<"c">() += 100;
+            ASSERT(x.var<"c">() == 102);
+            THROWS("doesn't exist", x.var<"a">());
+            vars.clear();
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "bc");
+
+            x();
+            ASSERT(x.finished());
+
+            ASSERT(!x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">());
+            THROWS("doesn't exist", x.var<"a">());
+            THROWS("doesn't exist", x.var<"b">());
+            THROWS("doesn't exist", x.var<"c">());
+            vars.clear();
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "");
+
+            x.reset();
+
+            ASSERT(!x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">());
+            THROWS("doesn't exist", x.var<"a">());
+            THROWS("doesn't exist", x.var<"b">());
+            THROWS("doesn't exist", x.var<"c">());
+            vars.clear();
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "");
+        }
+
+        { // More `for_each_alive_var` tests.
+            { // No variables.
+                auto x = RCORO();
+                ASSERT(!x.for_each_alive_var([](auto){FAIL("This shouldn't be called.");}));
+            }
+
+            { // Interrupting `for_each_alive_var`.
+                auto x = RCORO({
+                    RC_VAR(a, 1); (void)a;
+                    RC_VAR(b, 2); (void)b;
+                    RC_VAR(c, 3); (void)c;
+                    RC_YIELD();
+                });
+
+                x();
+
+                std::string vars;
+                bool ret = x.for_each_alive_var([&](auto i)
+                {
+                    vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view();
+                    return i.value == 1;
+                });
+                ASSERT(ret);
+                ASSERT(vars == "ab");
+            }
+        }
+    }
+
     std::cout << "OK\n";
 }

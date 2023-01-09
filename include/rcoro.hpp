@@ -316,35 +316,13 @@ namespace rcoro
             }(std::make_integer_sequence<int, NumVars<T>::value>{});
         }
 
-        // Stateful trick to store variable offsets.
+        // Determines the variable offset in the frame, based on `TentativeVarType`.
+        template <typename T, int N, int M = N>
+        struct VarOffset : VarOffset<T, N, M-1> {};
         template <typename T, int N>
-        struct VarOffsetReader
-        {
-            DETAIL_RCORO_TEMPLATE_FRIEND(
-            friend constexpr std::size_t _adl_detail_rcoro_var_offset(VarOffsetReader<T, N>);
-            )
-        };
-        template <typename T, int N, std::size_t M>
-        struct VarOffsetWriter
-        {
-            friend constexpr std::size_t _adl_detail_rcoro_var_offset(VarOffsetReader<T, N>)
-            {
-                return M;
-            }
-        };
-        constexpr void _adl_detail_rcoro_var_offset() {} // Dummy ADL target.
-        template <typename T, int N>
-        struct VarOffset : std::integral_constant<std::size_t, _adl_detail_rcoro_var_offset(VarOffsetReader<T, N>{})> {};
-
-        // Determines the variable offset automatically, and writes it to the stateful storage.
-        template <bool Write, typename T, int N, int M = N>
-        struct VarOffsetWriterAuto {};
-        template <typename T, int N, int M>
-        struct VarOffsetWriterAuto<true, T, N, M> : VarOffsetWriterAuto<true, T, N, M-1> {};
-        template <typename T, int N>
-        struct VarOffsetWriterAuto<true, T, N, 0> : VarOffsetWriter<T, N, 0> {};
+        struct VarOffset<T, N, 0> : std::integral_constant<std::size_t, 0> {};
         template <typename T, int N, int M> requires(M > 0 && VarVarReach<T, N, M-1>::value)
-        struct VarOffsetWriterAuto<true, T, N, M> : VarOffsetWriter<T, N,
+        struct VarOffset<T, N, M> : std::integral_constant<std::size_t,
             (
                 VarOffset<T, M-1>::value
                 + sizeof(TentativeVarType<T, M-1>)
@@ -1471,9 +1449,7 @@ namespace rcoro
     auto &RC_RESTRICT name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
 #define DETAIL_RCORO_VAR_META(varindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
-    (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
-    /* Determine the stack frame offset for this variable. */\
-    (void)::rcoro::detail::VarOffsetWriterAuto<_rcoro_frame_t::fake, _rcoro_Marker, varindex>{};
+    (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{};
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) \
     do \
     { \

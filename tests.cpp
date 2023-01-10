@@ -343,6 +343,7 @@ class Expect
 int main()
 {
     // * Deserialization from string.
+    // * Enforce coroutine lambda returning false.
     // * Serialization-deserialization tests.
     // * Transition away from `::tag`, accept `coro<T>` directly?
     // * CI
@@ -383,6 +384,7 @@ int main()
             static_assert(rcoro::yield_index_const<tag, ""> == 0);
             static_assert(rcoro::yields_names_are_unique<tag>);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
+            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
         }
 
         { // Single yield point.
@@ -410,6 +412,8 @@ int main()
             static_assert(rcoro::yields_names_are_unique<tag>);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
             static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 0>{});
+            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
+            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(1, 0));
 
             { // Single unnamed yield point.
                 auto x = RCORO(RC_YIELD(););
@@ -441,6 +445,7 @@ int main()
             THROWS("out of range", rcoro::var_name<tag>(1));
             static_assert(rcoro::num_yields<tag> == 1);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
+            ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
         }
 
         { // Single variable visible from a single yield point.
@@ -452,6 +457,8 @@ int main()
             static_assert(rcoro::num_yields<tag> == 2);
             static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
             static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 1>{0});
+            ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
+            ASSERT( rcoro::var_lifetime_overlaps_yield<tag>(0, 1));
         }
 
         { // Ambiguous variable name.
@@ -541,10 +548,18 @@ int main()
         static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 2> && !rcoro::var_lifetime_overlaps_var<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 3, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 4, 2>);
         static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 3> && !rcoro::var_lifetime_overlaps_var<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 3> &&  rcoro::var_lifetime_overlaps_var<tag, 3, 3> && !rcoro::var_lifetime_overlaps_var<tag, 4, 3>);
         static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 4> && !rcoro::var_lifetime_overlaps_var<tag, 1, 4> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 4> && !rcoro::var_lifetime_overlaps_var<tag, 3, 4> &&  rcoro::var_lifetime_overlaps_var<tag, 4, 4>);
-        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 2, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 0> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 0> && rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 1> &&  rcoro::var_lifetime_overlaps_yield<tag, 1, 1> && !rcoro::var_lifetime_overlaps_yield<tag, 2, 1> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 1> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 1> && rcoro::yield_vars<tag, 1> == std::array{1});
-        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 2> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_yield<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_yield<tag, 3, 2> && !rcoro::var_lifetime_overlaps_yield<tag, 4, 2> && rcoro::yield_vars<tag, 2> == std::array{2,3});
-        static_assert(!rcoro::var_lifetime_overlaps_yield<tag, 0, 3> && !rcoro::var_lifetime_overlaps_yield<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_yield<tag, 2, 3> && !rcoro::var_lifetime_overlaps_yield<tag, 3, 3> &&  rcoro::var_lifetime_overlaps_yield<tag, 4, 3> && rcoro::yield_vars<tag, 3> == std::array{2,4});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 3, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 4, 0> && rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 1> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<tag, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<tag, 3, 1> && !rcoro::var_lifetime_overlaps_yield_const<tag, 4, 1> && rcoro::yield_vars<tag, 1> == std::array{1});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 2> && !rcoro::var_lifetime_overlaps_yield_const<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 3, 2> && !rcoro::var_lifetime_overlaps_yield_const<tag, 4, 2> && rcoro::yield_vars<tag, 2> == std::array{2,3});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 3> && !rcoro::var_lifetime_overlaps_yield_const<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 2, 3> && !rcoro::var_lifetime_overlaps_yield_const<tag, 3, 3> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 4, 3> && rcoro::yield_vars<tag, 3> == std::array{2,4});
+        THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(-1, 0));
+        THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(rcoro::num_vars<tag>, 0));
+        THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, -1));
+        THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, rcoro::num_yields<tag>));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(1, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(2, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(3, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(4, 0));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 1) &&  rcoro::var_lifetime_overlaps_yield<tag>(1, 1) && !rcoro::var_lifetime_overlaps_yield<tag>(2, 1) && !rcoro::var_lifetime_overlaps_yield<tag>(3, 1) && !rcoro::var_lifetime_overlaps_yield<tag>(4, 1));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 2) && !rcoro::var_lifetime_overlaps_yield<tag>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<tag>(2, 2) &&  rcoro::var_lifetime_overlaps_yield<tag>(3, 2) && !rcoro::var_lifetime_overlaps_yield<tag>(4, 2));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 3) && !rcoro::var_lifetime_overlaps_yield<tag>(1, 3) &&  rcoro::var_lifetime_overlaps_yield<tag>(2, 3) && !rcoro::var_lifetime_overlaps_yield<tag>(3, 3) &&  rcoro::var_lifetime_overlaps_yield<tag>(4, 3));
 
         Expect ex(R"(
             A<int>::A(10)                # `a` created and destroyed immediately.

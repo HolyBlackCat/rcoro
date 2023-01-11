@@ -844,7 +844,7 @@ namespace rcoro
             throw std::runtime_error("Coroutine variable index is out of range.");
         if (yield_index < 0 || yield_index >= num_yields<T>)
             throw std::runtime_error("Coroutine yield point index is out of range.");
-        if constexpr (num_yields<T> == 0 || num_vars<T> == 0)
+        if constexpr (num_vars<T> == 0) // We always have at least one yield point, otherwise we'd check that here too.
         {
             return false;
         }
@@ -956,6 +956,27 @@ namespace rcoro
     class coro
     {
         typename T::_rcoro_frame_t frame;
+
+        // `load_unordered` uses this.
+        // Can't define it inside of that function because of Clang bug: https://github.com/llvm/llvm-project/issues/59734
+        template <int Y>
+        struct LoadUnorderedGuard
+        {
+            coro &co;
+            bool fail = true;
+            int i = 0;
+            std::array<void (*)(coro &), yield_vars<T, Y>.size()> funcs{};
+            constexpr ~LoadUnorderedGuard()
+            {
+                if (!fail)
+                    return;
+                while (i > 0)
+                {
+                    i--;
+                    funcs[i](co);
+                }
+            }
+        };
 
       public:
         using tag = T;
@@ -1226,39 +1247,70 @@ namespace rcoro
         // Calls `func` once.
         // `func` should call `var`, which is `void var(int var_index, ...)`, for every variable it knows.
         // `var_index` can be obtained by calling `rcoro::var_index()` on a string, which is the variable name.
-        // `var` validates the given variable index (throws if invalid), then calls `load_var` with the index converted to `std::integral_constant`.
-        // The remaining arguments are forwarded to `load_var` as is.
+        // `var` validates the given variable index (throws if invalid), then calls `load_var` passing
+        // the index as the first argument as `std::integral_constant`. The remaining arguments are forwarded to `load_var` as is.
         // The sole purpose of `var` is to validate the variable index and convert it to a compile-time constant.
         // `load_var` then should call `construct` (which is `void construct(auto &&...)`) at most once to initialize the variable.
-        // Calling `construct` more than once per variable index throws.
+        // Calling `construct` more than once per variable throws. Not calling it at all is valid, but you have to revisit that variable later.
         // `func` can return false at any time to abort, then the whole function also returns false.
         // Ultimately `func` should return `true` to finish the load. Then the final validation is performed, throwing if any variables were missed.
         // Then, on success, returns true.
         // If the function ends up throwing or returning false, the coroutine is zeroed as if by `reset()`, and any variables
         // constructed so far are destroyed (in reverse construction order, though elsewhere we use reverse declaration order).
-        // template <typename F, typename G>
-        // constexpr bool load_unordered(rcoro::finish_reason fin_reason, int yield_index, F &&func, G &&load_var)
-        // {
-        //     // Don't want to forward a return value out of `load_var`, because this gets wonky when there are no yield points.
-        //     // What do we return then? `void` might not work with the user code,
-        //     // and we can't get any type out of `load_var` without throwing a wrong index at it.
-        //     return load_raw_bytes_UNSAFE(fin_reason, yield_index, [&]
-        //     {
-        //         bool ok = std::forward<F>(func)([&](int var_index, auto &&... extra)
-        //         {
-        //             if (var_index < 0 || var_index >= num_vars<T>)
-        //                 throw std::runtime_error("Coroutine variable index is out of range.");
-        //             detail::with_const_index<num_yields<T>>(yield_index, [&](auto yield_index_const)
-        //             {
-        //                 constexpr int y = yield_index_const.value;
-        //                 if (!std::binary_search(yield_vars<T, y>.begin(), yield_vars<T, y>.end(), var_index))
-        //                     throw std::runtime_error("This coroutine variable doesn't exist at this yield point.");
+        template <typename F, typename G>
+        constexpr bool load_unordered(rcoro::finish_reason fin_reason, int yield_index, F &&func, G &&load_var)
+        {
+            // Don't want to forward the return value out of `load_var`, because this gets wonky when there are no yield points.
+            // What do we return then? `void` might not work with the user code,
+            // and we can't get any type out of `load_var` without throwing a wrong index at it.
+            return load_raw_bytes_UNSAFE(fin_reason, yield_index, [&]
+            {
+                bool ret = false;
 
-        //             });
+                // We always have at least one
+                detail::with_const_index<num_yields<T>>(yield_index, [&](auto yield_index_const)
+                {
+                    constexpr int yield_index = yield_index_const.value;
 
-        //         });
-        //     });
-        // }
+                    LoadUnorderedGuard<yield_index> guard{.co = *this};
+                    std::array<bool, yield_vars<T, yield_index>.size()> vars_done{};
+
+                    bool ok = std::forward<F>(func)([&](int var_index, auto &&... extra)
+                    {
+                        if (var_index < 0 || var_index >= num_vars<T>)
+                            throw std::runtime_error("Coroutine variable index is out of range.");
+                        auto it = std::lower_bound(yield_vars<T, yield_index>.begin(), yield_vars<T, yield_index>.end(), var_index);
+                        if (it == yield_vars<T, yield_index>.end() || *it != var_index)
+                            throw std::runtime_error("This coroutine variable doesn't exist at this yield point.");
+                        auto packed_var_index = it - yield_vars<T, yield_index>.begin();
+                        if (vars_done[packed_var_index])
+                            throw std::runtime_error("This coroutine variable was already loaded.");
+
+                        detail::with_const_index<yield_vars<T, yield_index>.size()>(packed_var_index, [&](auto packed_var_index_const)
+                        {
+                            static constexpr auto var_index_const = std::integral_constant<int, yield_vars<T, yield_index>[packed_var_index_const.value]>{};
+                            load_var(var_index_const, [&]<typename ...P>(P &&... params)
+                            {
+                                if (vars_done[packed_var_index])
+                                    throw std::runtime_error("This coroutine variable was already loaded.");
+                                std::construct_at(frame.template var_storage<var_index_const.value>(), std::forward<P>(params)...);
+                                vars_done[packed_var_index] = true;
+                                guard.funcs[guard.i++] = [](coro &self) noexcept {std::destroy_at(&self.frame.template var<var_index_const.value>());};
+                            }, decltype(extra)(extra)...);
+                        });
+                    });
+
+                    if (!ok)
+                        return;
+                    if (guard.i != yield_vars<T, yield_index>.size())
+                        throw std::runtime_error("Some coroutine variables are missing.");
+                    guard.fail = false;
+                    ret = true;
+                    return;
+                });
+                return ret;
+            });
+        }
 
 
         // Debug info printer.

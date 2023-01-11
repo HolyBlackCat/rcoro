@@ -141,6 +141,8 @@ class A
     T value{};
 
   public:
+    using type = T;
+
     template <typename U> requires std::is_same_v<T, U>
     A(U new_value)
     {
@@ -1762,6 +1764,380 @@ int main()
                             FAIL("Wrong variable index.");
                     }));
                     *test_detail::a_log += "... done\n";
+                }
+            }
+        }
+
+        { // `load_unordered`.
+            auto x = RCORO({
+                RC_YIELD();
+
+                {
+                    RC_VAR(unused, A(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                }
+
+                RC_VAR(aa, A(short(1))); (void)aa;
+                RC_VAR(bb, A(long(2))); (void)bb;
+                RC_VAR(cc, A(int(3))); (void)cc;
+                RC_YIELD();
+            });
+
+            { // Finish reason and yield index validation.
+                // A minimal test, because we already use `load_raw_bytes_UNSAFE` under the hood.
+
+                Expect ex("");
+
+                decltype(x) y(rcoro::rewind);
+                y();
+
+                THROWS("finish reason is out of range", y.load_unordered(rcoro::finish_reason(-1), 0,
+                    [](auto){FAIL("This shouldn't be called."); return true;},
+                    [](auto, auto){FAIL("This shouldn't be called.");}
+                ));
+                ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset);
+            }
+
+            { // Successful loads.
+                { // Yield point with variables.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        ... 3
+                        A<int>::A(30)
+                        ... done
+                        A<int>::~A(30)
+                        A<long>::~A(20)
+                        A<short>::~A(10)
+                    )");
+
+                    decltype(x) y;
+                    ASSERT(y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            // Can't use the correct variable types here, because this lambda must work for every yield point.
+                            var(2, 20, "A<long>");
+                            var(1, 10, "A<short>");
+                            var(3, 30, "A<int>");
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value, std::string_view type_name)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            ASSERT(type_name == test_detail::get_type_name<var_type>());
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(!y.finished() && y.yield_point() == 2);
+                    ASSERT(short(y.var<"aa">()) == 10);
+                    ASSERT(long(y.var<"bb">()) == 20);
+                    ASSERT(int(y.var<"cc">()) == 30);
+                    *test_detail::a_log += "... done\n";
+                }
+
+                { // An initial yield point.
+                    Expect ex("");
+
+                    decltype(x) y;
+                    ASSERT(y.load_unordered({}, 0,
+                        [](auto)
+                        {
+                            return true;
+                        },
+                        [](auto, auto)
+                        {
+                            FAIL("This shouldn't be called.");
+                        }
+                    ));
+                    ASSERT(!y.finished() && y.yield_point() == 0);
+                }
+
+                { // Finished.
+                    Expect ex("");
+
+                    decltype(x) y;
+                    ASSERT(y.load_unordered(rcoro::finish_reason::exception, 0,
+                        [](auto)
+                        {
+                            return true;
+                        },
+                        [](auto, auto)
+                        {
+                            FAIL("This shouldn't be called.");
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::exception && y.yield_point() == 0);
+                }
+
+                { // Coroutine without variables.
+                    auto z = RCORO(RC_YIELD(););
+
+                    Expect ex("");
+                    ASSERT(z.load_unordered(rcoro::finish_reason::not_finished, 1,
+                        [](auto)
+                        {
+                            return true;
+                        },
+                        [](auto, auto)
+                        {
+                            FAIL("This shouldn't be called.");
+                        }
+                    ));
+
+                    ASSERT(!z.finished() && z.yield_point() == 1);
+                }
+            }
+
+            { // Failures.
+                { // Manual abort.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        aborting!
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    ASSERT(!y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "aborting!\n";
+                            return false;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Excepion.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        throw!
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("test!", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "throw!\n";
+                            throw std::runtime_error("test!");
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Missing variables.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        stopping!
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("variables are missing", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "stopping!\n";
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Calling construct twice.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        again!
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("already loaded", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                            if constexpr (var_index.value == 1)
+                            {
+                                *test_detail::a_log += "again!\n";
+                                construct(typename var_type::type(value));
+                            }
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Invalid variable index: too small.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        and...
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("out of range", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "and...\n";
+                            var(-1, 10);
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Invalid variable index: too large.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        and...
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("out of range", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "and...\n";
+                            var(rcoro::num_vars<decltype(x)::tag>, 10);
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Invalid variable index: not for this yield point.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        and...
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("doesn't exist at this yield point", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "and...\n";
+                            var(0, 10);
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
+                }
+
+                { // Invalid variable index: already loaded.
+                    Expect ex(R"(
+                        ... 2
+                        A<long>::A(20)
+                        ... 1
+                        A<short>::A(10)
+                        and...
+                        A<short>::~A(10)
+                        A<long>::~A(20)
+                    )");
+
+                    decltype(x) y;
+                    THROWS("already loaded", y.load_unordered({}, 2,
+                        [](auto var)
+                        {
+                            var(2, 20);
+                            var(1, 10);
+                            *test_detail::a_log += "and...\n";
+                            var(1, 10);
+                            return true;
+                        },
+                        [](auto var_index, auto construct, auto value)
+                        {
+                            *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
+                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            construct(typename var_type::type(value));
+                        }
+                    ));
+                    ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset && y.yield_point() == 0);
                 }
             }
         }

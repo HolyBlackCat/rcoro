@@ -344,7 +344,7 @@ class Expect
 
 int main()
 {
-    // * Transition away from `::tag`, accept `coro<T>` directly?
+    // * Test debug info (both static and dynamic, for the exact match).
     // * CI
     // * Test that we include all necessary headers.
     // * Test MSVC.
@@ -366,98 +366,98 @@ int main()
 
         { // Empty coroutine.
             auto x = RCORO();
-            using tag = decltype(x)::tag;
-            static_assert(rcoro::frame_size<tag> == 0);
-            static_assert(rcoro::frame_alignment<tag> == 1);
-            static_assert(rcoro::num_vars<tag> == 0);
-            THROWS("unknown", rcoro::var_index<tag>("?"));
-            THROWS("out of range", rcoro::var_name<tag>(0));
-            static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
-            static_assert(rcoro::num_yields<tag> == 1);
-            static_assert(rcoro::yield_name<tag>(0) == "");
-            static_assert(rcoro::yield_name_const<tag, 0>.view() == "");
-            static_assert(rcoro::yield_index<tag>("") == 0);
-            THROWS("unknown", rcoro::yield_index<tag>("?"));
-            static_assert(rcoro::yield_index_or_negative<tag>("") == 0);
-            static_assert(rcoro::yield_index_or_negative<tag>("?") == rcoro::unknown_name);
-            static_assert(rcoro::yield_index_const<tag, ""> == 0);
-            static_assert(rcoro::yields_names_are_unique<tag>);
-            static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
+            using X = decltype(x);
+            static_assert(rcoro::frame_size<X> == 0);
+            static_assert(rcoro::frame_alignment<X> == 1);
+            static_assert(rcoro::num_vars<X> == 0);
+            THROWS("unknown", rcoro::var_index<X>("?"));
+            THROWS("out of range", rcoro::var_name<X>(0));
+            static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::num_yields<X> == 1);
+            static_assert(rcoro::yield_name<X>(0) == "");
+            static_assert(rcoro::yield_name_const<X, 0>.view() == "");
+            static_assert(rcoro::yield_index<X>("") == 0);
+            THROWS("unknown", rcoro::yield_index<X>("?"));
+            static_assert(rcoro::yield_index_or_negative<X>("") == 0);
+            static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::yield_index_const<X, ""> == 0);
+            static_assert(rcoro::yields_names_are_unique<X>);
+            static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
+            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
         }
 
         { // Single yield point.
             auto x = RCORO(RC_YIELD("y"););
-            using tag = decltype(x)::tag;
-            static_assert(rcoro::frame_size<tag> == 0);
-            static_assert(rcoro::frame_alignment<tag> == 1);
-            static_assert(rcoro::num_vars<tag> == 0);
-            THROWS("unknown", rcoro::var_index<tag>("?"));
-            THROWS("out of range", rcoro::var_name<tag>(0));
-            static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
-            static_assert(rcoro::num_yields<tag> == 2);
-            static_assert(rcoro::yield_name<tag>(0) == "");
-            static_assert(rcoro::yield_name<tag>(1) == "y");
-            static_assert(rcoro::yield_name_const<tag, 0>.view() == "");
-            static_assert(rcoro::yield_name_const<tag, 1>.view() == "y");
-            static_assert(rcoro::yield_index<tag>("") == 0);
-            static_assert(rcoro::yield_index<tag>("y") == 1);
-            THROWS("unknown", rcoro::yield_index<tag>("?"));
-            static_assert(rcoro::yield_index_or_negative<tag>("") == 0);
-            static_assert(rcoro::yield_index_or_negative<tag>("y") == 1);
-            static_assert(rcoro::yield_index_or_negative<tag>("?") == rcoro::unknown_name);
-            static_assert(rcoro::yield_index_const<tag, ""> == 0);
-            static_assert(rcoro::yield_index_const<tag, "y"> == 1);
-            static_assert(rcoro::yields_names_are_unique<tag>);
-            static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-            static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 0>{});
-            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
-            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(1, 0));
+            using X = decltype(x);
+            static_assert(rcoro::frame_size<X> == 0);
+            static_assert(rcoro::frame_alignment<X> == 1);
+            static_assert(rcoro::num_vars<X> == 0);
+            THROWS("unknown", rcoro::var_index<X>("?"));
+            THROWS("out of range", rcoro::var_name<X>(0));
+            static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::num_yields<X> == 2);
+            static_assert(rcoro::yield_name<X>(0) == "");
+            static_assert(rcoro::yield_name<X>(1) == "y");
+            static_assert(rcoro::yield_name_const<X, 0>.view() == "");
+            static_assert(rcoro::yield_name_const<X, 1>.view() == "y");
+            static_assert(rcoro::yield_index<X>("") == 0);
+            static_assert(rcoro::yield_index<X>("y") == 1);
+            THROWS("unknown", rcoro::yield_index<X>("?"));
+            static_assert(rcoro::yield_index_or_negative<X>("") == 0);
+            static_assert(rcoro::yield_index_or_negative<X>("y") == 1);
+            static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::yield_index_const<X, ""> == 0);
+            static_assert(rcoro::yield_index_const<X, "y"> == 1);
+            static_assert(rcoro::yields_names_are_unique<X>);
+            static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
+            static_assert(rcoro::yield_vars<X, 1> == std::array<int, 0>{});
+            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
+            THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(1, 0));
 
             { // Single unnamed yield point.
                 auto x = RCORO(RC_YIELD(););
-                using tag = decltype(x)::tag;
-                static_assert(rcoro::num_yields<tag> == 2);
-                static_assert(rcoro::yield_name<tag>(0) == "");
-                static_assert(rcoro::yield_name<tag>(1) == "");
-                static_assert(rcoro::yield_name_const<tag, 0>.view() == "");
-                static_assert(rcoro::yield_name_const<tag, 1>.view() == "");
-                THROWS("ambiguous", rcoro::yield_index<tag>(""));
-                THROWS("unknown", rcoro::yield_index<tag>("?"));
-                static_assert(rcoro::yield_index_or_negative<tag>("") == rcoro::ambiguous_name);
-                static_assert(rcoro::yield_index_or_negative<tag>("?") == rcoro::unknown_name);
-                static_assert(!rcoro::yields_names_are_unique<tag>);
-                static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-                static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 0>{});
+                using X = decltype(x);
+                static_assert(rcoro::num_yields<X> == 2);
+                static_assert(rcoro::yield_name<X>(0) == "");
+                static_assert(rcoro::yield_name<X>(1) == "");
+                static_assert(rcoro::yield_name_const<X, 0>.view() == "");
+                static_assert(rcoro::yield_name_const<X, 1>.view() == "");
+                THROWS("ambiguous", rcoro::yield_index<X>(""));
+                THROWS("unknown", rcoro::yield_index<X>("?"));
+                static_assert(rcoro::yield_index_or_negative<X>("") == rcoro::ambiguous_name);
+                static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
+                static_assert(!rcoro::yields_names_are_unique<X>);
+                static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
+                static_assert(rcoro::yield_vars<X, 1> == std::array<int, 0>{});
             }
         }
 
         { // Single variable.
             auto x = RCORO(RC_VAR(a, 42); (void)a;);
-            using tag = decltype(x)::tag;
-            static_assert(rcoro::num_vars<tag> == 1);
-            static_assert(rcoro::var_index<tag>("a") == 0);
-            THROWS("unknown", rcoro::var_index<tag>("?"));
-            static_assert(rcoro::var_index_or_negative<tag>("a") == 0);
-            static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
-            static_assert(rcoro::var_name<tag>(0) == "a");
-            THROWS("out of range", rcoro::var_name<tag>(1));
-            static_assert(rcoro::num_yields<tag> == 1);
-            static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-            ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
+            using X = decltype(x);
+            static_assert(rcoro::num_vars<X> == 1);
+            static_assert(rcoro::var_index<X>("a") == 0);
+            THROWS("unknown", rcoro::var_index<X>("?"));
+            static_assert(rcoro::var_index_or_negative<X>("a") == 0);
+            static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::var_name<X>(0) == "a");
+            THROWS("out of range", rcoro::var_name<X>(1));
+            static_assert(rcoro::num_yields<X> == 1);
+            static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
+            ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
         }
 
         { // Single variable visible from a single yield point.
             auto x = RCORO(RC_VAR(a, 42); (void)a; RC_YIELD(););
-            using tag = decltype(x)::tag;
-            static_assert(rcoro::frame_size<tag> == sizeof(int));
-            static_assert(rcoro::frame_alignment<tag> == alignof(int));
-            static_assert(rcoro::num_vars<tag> == 1);
-            static_assert(rcoro::num_yields<tag> == 2);
-            static_assert(rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-            static_assert(rcoro::yield_vars<tag, 1> == std::array<int, 1>{0});
-            ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 0));
-            ASSERT( rcoro::var_lifetime_overlaps_yield<tag>(0, 1));
+            using X = decltype(x);
+            static_assert(rcoro::frame_size<X> == sizeof(int));
+            static_assert(rcoro::frame_alignment<X> == alignof(int));
+            static_assert(rcoro::num_vars<X> == 1);
+            static_assert(rcoro::num_yields<X> == 2);
+            static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
+            static_assert(rcoro::yield_vars<X, 1> == std::array<int, 1>{0});
+            ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
+            ASSERT( rcoro::var_lifetime_overlaps_yield<X>(0, 1));
         }
 
         { // Ambiguous variable name.
@@ -471,36 +471,36 @@ int main()
                     (void)a;
                 }
             });
-            using tag = decltype(x)::tag;
-            static_assert(rcoro::num_vars<tag> == 2);
-            THROWS("ambiguous", rcoro::var_index<tag>("a"));
-            THROWS("unknown", rcoro::var_index<tag>("?"));
-            static_assert(rcoro::var_index_or_negative<tag>("a") == rcoro::ambiguous_name);
-            static_assert(rcoro::var_index_or_negative<tag>("?") == rcoro::unknown_name);
-            static_assert(rcoro::var_name<tag>(0) == "a");
-            static_assert(rcoro::var_name<tag>(1) == "a");
+            using X = decltype(x);
+            static_assert(rcoro::num_vars<X> == 2);
+            THROWS("ambiguous", rcoro::var_index<X>("a"));
+            THROWS("unknown", rcoro::var_index<X>("?"));
+            static_assert(rcoro::var_index_or_negative<X>("a") == rcoro::ambiguous_name);
+            static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::var_name<X>(0) == "a");
+            static_assert(rcoro::var_name<X>(1) == "a");
         }
 
         { // `frame_is_trivially_copyable`
             { // Empty coroutine.
                 auto x = RCORO();
-                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)>);
             }
 
             { // Trivially copyable variable.
                 auto x = RCORO(RC_VAR(a, int(42)); (void)a; RC_YIELD(););
-                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)>);
             }
 
             { // Non-trivially copyable variable.
                 auto x = RCORO(RC_VAR(a, A<int>(42)); (void)a; RC_YIELD(););
-                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)>);
             }
 
             { // Non-trivially copyable variable, but not visible at any yield points.
                 auto x = RCORO(RC_VAR(a, A<int>(42)); (void)a;);
                 // Currently those are taken into account, but we can change it later.
-                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)::tag>);
+                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)>);
             }
         }
     }
@@ -533,32 +533,32 @@ int main()
 
             RC_YIELD("i");
         });
-        using tag = decltype(x)::tag;
-        static_assert(rcoro::frame_size<tag> == sizeof(int) * 2);
-        static_assert(rcoro::frame_alignment<tag> == alignof(int));
-        static_assert(rcoro::num_vars<tag> == 5);
-        static_assert(rcoro::var_offset<tag, 0> == 0);
-        static_assert(rcoro::var_offset<tag, 1> == 0);
-        static_assert(rcoro::var_offset<tag, 2> == 0);
-        static_assert(rcoro::var_offset<tag, 3> == sizeof(short));
-        static_assert(rcoro::var_offset<tag, 4> == sizeof(int));
-        static_assert( rcoro::var_lifetime_overlaps_var<tag, 0, 0> && !rcoro::var_lifetime_overlaps_var<tag, 1, 0> && !rcoro::var_lifetime_overlaps_var<tag, 2, 0> && !rcoro::var_lifetime_overlaps_var<tag, 3, 0> && !rcoro::var_lifetime_overlaps_var<tag, 4, 0>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 1> &&  rcoro::var_lifetime_overlaps_var<tag, 1, 1> && !rcoro::var_lifetime_overlaps_var<tag, 2, 1> && !rcoro::var_lifetime_overlaps_var<tag, 3, 1> && !rcoro::var_lifetime_overlaps_var<tag, 4, 1>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 2> && !rcoro::var_lifetime_overlaps_var<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 3, 2> &&  rcoro::var_lifetime_overlaps_var<tag, 4, 2>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 3> && !rcoro::var_lifetime_overlaps_var<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 3> &&  rcoro::var_lifetime_overlaps_var<tag, 3, 3> && !rcoro::var_lifetime_overlaps_var<tag, 4, 3>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<tag, 0, 4> && !rcoro::var_lifetime_overlaps_var<tag, 1, 4> &&  rcoro::var_lifetime_overlaps_var<tag, 2, 4> && !rcoro::var_lifetime_overlaps_var<tag, 3, 4> &&  rcoro::var_lifetime_overlaps_var<tag, 4, 4>);
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 3, 0> && !rcoro::var_lifetime_overlaps_yield_const<tag, 4, 0> && rcoro::yield_vars<tag, 0> == std::array<int, 0>{});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 1> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<tag, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<tag, 3, 1> && !rcoro::var_lifetime_overlaps_yield_const<tag, 4, 1> && rcoro::yield_vars<tag, 1> == std::array{1});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 2> && !rcoro::var_lifetime_overlaps_yield_const<tag, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 2, 2> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 3, 2> && !rcoro::var_lifetime_overlaps_yield_const<tag, 4, 2> && rcoro::yield_vars<tag, 2> == std::array{2,3});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<tag, 0, 3> && !rcoro::var_lifetime_overlaps_yield_const<tag, 1, 3> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 2, 3> && !rcoro::var_lifetime_overlaps_yield_const<tag, 3, 3> &&  rcoro::var_lifetime_overlaps_yield_const<tag, 4, 3> && rcoro::yield_vars<tag, 3> == std::array{2,4});
-        THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(-1, 0));
-        THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(rcoro::num_vars<tag>, 0));
-        THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, -1));
-        THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<tag>(0, rcoro::num_yields<tag>));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(1, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(2, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(3, 0) && !rcoro::var_lifetime_overlaps_yield<tag>(4, 0));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 1) &&  rcoro::var_lifetime_overlaps_yield<tag>(1, 1) && !rcoro::var_lifetime_overlaps_yield<tag>(2, 1) && !rcoro::var_lifetime_overlaps_yield<tag>(3, 1) && !rcoro::var_lifetime_overlaps_yield<tag>(4, 1));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 2) && !rcoro::var_lifetime_overlaps_yield<tag>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<tag>(2, 2) &&  rcoro::var_lifetime_overlaps_yield<tag>(3, 2) && !rcoro::var_lifetime_overlaps_yield<tag>(4, 2));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<tag>(0, 3) && !rcoro::var_lifetime_overlaps_yield<tag>(1, 3) &&  rcoro::var_lifetime_overlaps_yield<tag>(2, 3) && !rcoro::var_lifetime_overlaps_yield<tag>(3, 3) &&  rcoro::var_lifetime_overlaps_yield<tag>(4, 3));
+        using X = decltype(x);
+        static_assert(rcoro::frame_size<X> == sizeof(int) * 2);
+        static_assert(rcoro::frame_alignment<X> == alignof(int));
+        static_assert(rcoro::num_vars<X> == 5);
+        static_assert(rcoro::var_offset<X, 0> == 0);
+        static_assert(rcoro::var_offset<X, 1> == 0);
+        static_assert(rcoro::var_offset<X, 2> == 0);
+        static_assert(rcoro::var_offset<X, 3> == sizeof(short));
+        static_assert(rcoro::var_offset<X, 4> == sizeof(int));
+        static_assert( rcoro::var_lifetime_overlaps_var<X, 0, 0> && !rcoro::var_lifetime_overlaps_var<X, 1, 0> && !rcoro::var_lifetime_overlaps_var<X, 2, 0> && !rcoro::var_lifetime_overlaps_var<X, 3, 0> && !rcoro::var_lifetime_overlaps_var<X, 4, 0>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 1> &&  rcoro::var_lifetime_overlaps_var<X, 1, 1> && !rcoro::var_lifetime_overlaps_var<X, 2, 1> && !rcoro::var_lifetime_overlaps_var<X, 3, 1> && !rcoro::var_lifetime_overlaps_var<X, 4, 1>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 2> && !rcoro::var_lifetime_overlaps_var<X, 1, 2> &&  rcoro::var_lifetime_overlaps_var<X, 2, 2> &&  rcoro::var_lifetime_overlaps_var<X, 3, 2> &&  rcoro::var_lifetime_overlaps_var<X, 4, 2>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 3> && !rcoro::var_lifetime_overlaps_var<X, 1, 3> &&  rcoro::var_lifetime_overlaps_var<X, 2, 3> &&  rcoro::var_lifetime_overlaps_var<X, 3, 3> && !rcoro::var_lifetime_overlaps_var<X, 4, 3>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 4> && !rcoro::var_lifetime_overlaps_var<X, 1, 4> &&  rcoro::var_lifetime_overlaps_var<X, 2, 4> && !rcoro::var_lifetime_overlaps_var<X, 3, 4> &&  rcoro::var_lifetime_overlaps_var<X, 4, 4>);
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 4, 0> && rcoro::yield_vars<X, 0> == std::array<int, 0>{});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 1> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 4, 1> && rcoro::yield_vars<X, 1> == std::array{1});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 3, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 4, 2> && rcoro::yield_vars<X, 2> == std::array{2,3});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 4, 3> && rcoro::yield_vars<X, 3> == std::array{2,4});
+        THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(-1, 0));
+        THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(rcoro::num_vars<X>, 0));
+        THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, -1));
+        THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, rcoro::num_yields<X>));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0) && !rcoro::var_lifetime_overlaps_yield<X>(1, 0) && !rcoro::var_lifetime_overlaps_yield<X>(2, 0) && !rcoro::var_lifetime_overlaps_yield<X>(3, 0) && !rcoro::var_lifetime_overlaps_yield<X>(4, 0));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 1) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 1) && !rcoro::var_lifetime_overlaps_yield<X>(2, 1) && !rcoro::var_lifetime_overlaps_yield<X>(3, 1) && !rcoro::var_lifetime_overlaps_yield<X>(4, 1));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 2) && !rcoro::var_lifetime_overlaps_yield<X>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(3, 2) && !rcoro::var_lifetime_overlaps_yield<X>(4, 2));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 3) && !rcoro::var_lifetime_overlaps_yield<X>(1, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 3) && !rcoro::var_lifetime_overlaps_yield<X>(3, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(4, 3));
 
         Expect ex(R"(
             A<int>::A(10)                # `a` created and destroyed immediately.
@@ -1336,7 +1336,7 @@ int main()
             THROWS("doesn't exist", x.var<"b">());
             THROWS("doesn't exist", x.var<"c">());
             vars.clear();
-            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "");
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x), i.value>.view(); return false;}) == false && vars == "");
 
             x();
 
@@ -1347,7 +1347,7 @@ int main()
             THROWS("doesn't exist", x.var<"a">());
             THROWS("doesn't exist", x.var<"c">());
             vars.clear();
-            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "b");
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x), i.value>.view(); return false;}) == false && vars == "b");
 
             x();
 
@@ -1360,7 +1360,7 @@ int main()
             ASSERT(x.var<"c">() == 102);
             THROWS("doesn't exist", x.var<"a">());
             vars.clear();
-            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "bc");
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x), i.value>.view(); return false;}) == false && vars == "bc");
 
             x();
             ASSERT(x.finished());
@@ -1370,7 +1370,7 @@ int main()
             THROWS("doesn't exist", x.var<"b">());
             THROWS("doesn't exist", x.var<"c">());
             vars.clear();
-            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "");
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x), i.value>.view(); return false;}) == false && vars == "");
 
             x.reset();
 
@@ -1379,7 +1379,7 @@ int main()
             THROWS("doesn't exist", x.var<"b">());
             THROWS("doesn't exist", x.var<"c">());
             vars.clear();
-            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view(); return false;}) == false && vars == "");
+            ASSERT(x.for_each_alive_var([&](auto i){vars += rcoro::var_name_const<decltype(x), i.value>.view(); return false;}) == false && vars == "");
         }
 
         { // More `for_each_alive_var` tests.
@@ -1401,7 +1401,7 @@ int main()
                 std::string vars;
                 bool ret = x.for_each_alive_var([&](auto i)
                 {
-                    vars += rcoro::var_name_const<decltype(x)::tag, i.value>.view();
+                    vars += rcoro::var_name_const<decltype(x), i.value>.view();
                     return i.value == 1;
                 });
                 ASSERT(ret);
@@ -1444,7 +1444,7 @@ int main()
 
                 // Yield point too big.
                 x.rewind()();
-                THROWS("yield point index is out of range", x.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, rcoro::num_yields<decltype(x)::tag>, []{return false;}));
+                THROWS("yield point index is out of range", x.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, rcoro::num_yields<decltype(x)>, []{return false;}));
                 ASSERT(x.finish_reason() == rcoro::finish_reason::reset);
 
                 // Yield point is not zero, even though we're finished.
@@ -1506,9 +1506,9 @@ int main()
                     y.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 2, [&]
                     {
                         // Create out of order for test purposes, why not.
-                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 2>)) A(long(2));
-                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 1>)) A(short(1));
-                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y)::tag, 3>)) A(int(3));
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y), 2>)) A(long(2));
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y), 1>)) A(short(1));
+                        ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y), 3>)) A(int(3));
                         return true;
                     });
                     ASSERT(!y.finished());
@@ -1537,7 +1537,7 @@ int main()
             ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 1, [&]
             {
                 int value = 42;
-                std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x)::tag, 1>, &value, sizeof(int));
+                std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x), 1>, &value, sizeof(int));
                 return true;
             }));
 
@@ -1548,7 +1548,7 @@ int main()
             { // The same thing again, but make sure that we can load the variables before calling `load_raw_bytes`.
                 x.rewind()(result)(result);
                 int value = 43;
-                std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x)::tag, 1>, &value, sizeof(int));
+                std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x), 1>, &value, sizeof(int));
                 ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 1, []{return true;}));
 
                 result = 0;
@@ -1822,7 +1822,7 @@ int main()
                         [](auto var_index, auto construct, auto value, std::string_view type_name)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             ASSERT(type_name == test_detail::get_type_name<var_type>());
                             construct(typename var_type::type(value));
                         }
@@ -1911,7 +1911,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));
@@ -1942,7 +1942,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));
@@ -1972,7 +1972,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));
@@ -2001,7 +2001,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                             if constexpr (var_index.value == 1)
                             {
@@ -2037,7 +2037,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));
@@ -2062,13 +2062,13 @@ int main()
                             var(2, 20);
                             var(1, 10);
                             *test_detail::a_log += "and...\n";
-                            var(rcoro::num_vars<decltype(x)::tag>, 10);
+                            var(rcoro::num_vars<decltype(x)>, 10);
                             return true;
                         },
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));
@@ -2099,7 +2099,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));
@@ -2130,7 +2130,7 @@ int main()
                         [](auto var_index, auto construct, auto value)
                         {
                             *test_detail::a_log += "... " + std::to_string(var_index.value) + '\n';
-                            using var_type = rcoro::var_type<decltype(x)::tag, var_index.value>;
+                            using var_type = rcoro::var_type<decltype(x), var_index.value>;
                             construct(typename var_type::type(value));
                         }
                     ));

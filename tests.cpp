@@ -358,6 +358,7 @@ int main()
     // * Possible improvements:
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
     //   * Noexcept checks and other stuff should ignore variables that aren't visible on any yield points.
+    //   * `.var` and `.var_exists` should disambiguate variable names based on yield index.
 
     // Make sure our macros prefix everything with `::`.
     [[maybe_unused]] int std, rcoro, detail;
@@ -391,6 +392,8 @@ int main()
             static_assert(rcoro::yields_names_are_unique<X>);
             static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
+
+            static_assert(rcoro::var_names_are_unique_per_yield<X>);
         }
 
         { // Single yield point.
@@ -421,6 +424,8 @@ int main()
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(1, 0));
 
+            static_assert(rcoro::var_names_are_unique_per_yield<X>);
+
             { // Single unnamed yield point.
                 auto x = RCORO(RC_YIELD(););
                 using X = decltype(x);
@@ -436,6 +441,7 @@ int main()
                 static_assert(!rcoro::yields_names_are_unique<X>);
                 static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
                 static_assert(rcoro::yield_vars<X, 1> == std::array<int, 0>{});
+                static_assert(rcoro::var_names_are_unique_per_yield<X>);
             }
         }
 
@@ -452,6 +458,11 @@ int main()
             static_assert(rcoro::num_yields<X> == 1);
             static_assert(rcoro::yield_vars<X, 0> == std::array<int, 0>{});
             ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
+
+            THROWS("unknown", rcoro::var_index_at_yield<X>(0, "a"));
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(0, "a") == rcoro::unknown_name);
+
+            static_assert(rcoro::var_names_are_unique_per_yield<X>);
         }
 
         { // Single variable visible from a single yield point.
@@ -465,17 +476,21 @@ int main()
             static_assert(rcoro::yield_vars<X, 1> == std::array<int, 1>{0});
             ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
             ASSERT( rcoro::var_lifetime_overlaps_yield<X>(0, 1));
+
+            THROWS("unknown", rcoro::var_index_at_yield<X>(0, "a"));
+            ASSERT(rcoro::var_index_at_yield<X>(1, "a") == 0);
+
+            static_assert(rcoro::var_names_are_unique_per_yield<X>);
         }
 
         { // Ambiguous variable name.
             auto x = RCORO({
-                {
-                    RC_VAR(a, 1);
-                    (void)a;
-                }
+                RC_VAR(a, 1);
+                (void)a;
                 {
                     RC_VAR(a, 2);
                     (void)a;
+                    RC_YIELD();
                 }
             });
             using X = decltype(x);
@@ -486,6 +501,12 @@ int main()
             static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
             static_assert(rcoro::var_name<X>(0) == "a");
             static_assert(rcoro::var_name<X>(1) == "a");
+
+            THROWS("unknown", rcoro::var_index_at_yield<X>(0, "a"));
+            THROWS("ambiguous", rcoro::var_index_at_yield<X>(1, "a"));
+            THROWS("unknown", rcoro::var_index_at_yield<X>(1, "?"));
+
+            static_assert(!rcoro::var_names_are_unique_per_yield<X>);
         }
 
         { // `frame_is_trivially_copyable`
@@ -1956,6 +1977,53 @@ R"(yield_point = 3, `h`
                     ));
 
                     ASSERT(!z.finished() && z.yield_point() == 1);
+                }
+
+                { // Coroutine with duplicate variable names, but unique per yield.
+                    auto y = RCORO({
+                        {
+                            RC_VAR(unused, 0); // Skip index 0 to catch more bugs.
+                            (void)unused;
+                        }
+
+                        RC_VAR(a, 1);
+                        (void)a;
+
+                        RC_FOR((i, 0); i < 3; i++)
+                        {
+                            (void)i;
+                            RC_YIELD();
+                        }
+
+                        RC_FOR((i, 0); i < 5; i++)
+                        {
+                            (void)i;
+                            RC_YIELD();
+                        }
+                    });
+
+                    static_assert(rcoro::var_names_are_unique_per_yield<decltype(y)>);
+
+                    for (int yield_index : {1, 2})
+                    {
+                        ASSERT(y.load_unordered({}, yield_index,
+                            [&](auto var)
+                            {
+                                var(rcoro::var_index_at_yield<decltype(y)>(yield_index, "a"), 10);
+                                var(rcoro::var_index_at_yield<decltype(y)>(yield_index, "i"), 20);
+                                return true;
+                            },
+                            [](auto var_index, auto construct, int value)
+                            {
+                                (void)var_index;
+                                construct(value);
+                            }
+                        ));
+
+                        ASSERT(!y.finished() && y.yield_point() == yield_index);
+                        ASSERT(!y.var_exists<"unused">() && y.var_exists<"a">() && y.var_exists<2>() == (yield_index == 1) && y.var_exists<3>() == (yield_index == 2));
+                        ASSERT(y.var<"a">() == 10 && (yield_index == 1 ? y.var<2>() : y.var<3>()) == 20);
+                    }
                 }
             }
 

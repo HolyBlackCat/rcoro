@@ -706,6 +706,19 @@ namespace rcoro
             std::sort(ret.begin(), ret.end());
             return ret;
         }();
+        template <typename T, int Y>
+        constexpr auto var_name_to_index_mapping_per_yield = []{
+            constexpr auto indices = vars_reachable_from_yield<T, Y>();
+            std::array<std::pair<std::string_view, int>, indices.size()> ret{};
+            const_for<indices.size()>([&](auto index)
+            {
+                constexpr int i = index.value;
+                ret[i].first = VarName<T, indices[i]>::value.view();
+                ret[i].second = indices[i];
+            });
+            std::sort(ret.begin(), ret.end());
+            return ret;
+        }();
         // Same for yields.
         template <typename T>
         constexpr auto yield_name_to_index_mapping = []{
@@ -796,11 +809,45 @@ namespace rcoro
             return ambiguous_name;
         return it->second;
     }
+    // Same, but for a specific yield point.
+    template <specific_coro_type T>
+    [[nodiscard]] constexpr int var_index_at_yield_or_negative(int yield_index, std::string_view name)
+    {
+        int ret = unknown_name;
+        detail::with_const_index<detail::NumYields<detail::GetMarker<T>>::value>(yield_index, [&](auto yield_index_const)
+        {
+            const auto &arr = detail::var_name_to_index_mapping_per_yield<detail::GetMarker<T>, yield_index_const.value>;
+            auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
+            if (it == arr.end() || it->first != name)
+            {
+                ret = unknown_name;
+                return;
+            }
+            auto next_it = std::next(it);
+            if (next_it != arr.end() && next_it->first == name)
+            {
+                ret = ambiguous_name;
+                return;
+            }
+            ret = it->second;
+        });
+        return ret;
+    }
     // Same, but throws on failure.
     template <specific_coro_type T>
     [[nodiscard]] constexpr int var_index(std::string_view name)
     {
         int ret = var_index_or_negative<T>(name);
+        if (ret == ambiguous_name)
+            throw std::runtime_error("Ambiguous coroutine variable name: `" + std::string(name) + "`.");
+        if (ret < 0)
+            throw std::runtime_error("Unknown coroutine variable name: `" + std::string(name) + "`.");
+        return ret;
+    }
+    template <specific_coro_type T>
+    [[nodiscard]] constexpr int var_index_at_yield(int yield_index, std::string_view name)
+    {
+        int ret = var_index_at_yield_or_negative<T>(yield_index, name);
         if (ret == ambiguous_name)
             throw std::runtime_error("Ambiguous coroutine variable name: `" + std::string(name) + "`.");
         if (ret < 0)
@@ -831,6 +878,14 @@ namespace rcoro
             return arr[i];
         }
     }
+
+    // Returns true if at every specific yield point, every variable name is unique.
+    template <specific_coro_type T>
+    constexpr bool var_names_are_unique_per_yield = !detail::const_any_of<detail::NumYields<detail::GetMarker<T>>::value>([](auto yield_index)
+    {
+        const auto &arr = detail::var_name_to_index_mapping_per_yield<detail::GetMarker<T>, yield_index.value>;
+        return std::adjacent_find(arr.begin(), arr.end(), [](const auto &a, const auto &b){return a.first == b.first;}) != arr.end();
+    });
 
 
     // Examining yield points:

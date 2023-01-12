@@ -351,7 +351,6 @@ class Expect
 
 int main()
 {
-    // * Test debug info (both static and dynamic, for the exact match).
     // * Unique var names per yield point, test during deserialization.
     // * CI
     // * Test that we include all necessary headers.

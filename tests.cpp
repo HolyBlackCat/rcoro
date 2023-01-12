@@ -344,9 +344,6 @@ class Expect
 
 int main()
 {
-    // * Deserialization from string.
-    // * Enforce coroutine lambda returning false.
-    // * Serialization-deserialization tests.
     // * Transition away from `::tag`, accept `coro<T>` directly?
     // * CI
     // * Test that we include all necessary headers.

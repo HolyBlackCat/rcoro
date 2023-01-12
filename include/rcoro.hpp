@@ -1048,7 +1048,8 @@ namespace rcoro
 
             int jump_to = frame.pos;
 
-            typename T::_rcoro_lambda_t{}(frame, jump_to, std::forward<P>(params)...);
+            // This trick forces the return type to be `void`.
+            false ? void() : typename T::_rcoro_lambda_t{}(frame, jump_to, std::forward<P>(params)...);
 
             had_exception = false;
 
@@ -1223,7 +1224,8 @@ namespace rcoro
                     [&](auto varindex, auto completed)
                     {
                         bool ok = false;
-                        func(varindex, [&]<typename ...P>(P &&... params)
+                        // This trick forces the return type to be `void`.
+                        false ? void() : func(varindex, [&]<typename ...P>(P &&... params)
                         {
                             if (ok)
                                 throw std::runtime_error("Coroutine `load()` user callback must call the callback it receives at most once.");
@@ -1289,7 +1291,8 @@ namespace rcoro
                         detail::with_const_index<yield_vars<T, yield_index>.size()>(packed_var_index, [&](auto packed_var_index_const)
                         {
                             static constexpr auto var_index_const = std::integral_constant<int, yield_vars<T, yield_index>[packed_var_index_const.value]>{};
-                            load_var(var_index_const, [&]<typename ...P>(P &&... params)
+                            // This trick forces the return type to be `void`.
+                            false ? void() : load_var(var_index_const, [&]<typename ...P>(P &&... params)
                             {
                                 if (vars_done[packed_var_index])
                                     throw std::runtime_error("This coroutine variable was already loaded.");

@@ -197,11 +197,14 @@ class A
         test_detail::a_instances.erase(this);
     }
 
-    explicit operator T() noexcept
+    explicit operator T() const noexcept
     {
         test_detail::check_instance<T>(this, false);
         return value;
     }
+
+    template <typename U> requires(rcoro::detail::Printable<T, U> && !std::is_same_v<T, char>)
+    friend U &operator<<(U &s, const A &a) {return s << T(a);}
 };
 template <typename T> A(T) -> A<T>;
 
@@ -281,15 +284,19 @@ class Expect
         std::string line;
         while (std::getline(ss, line))
         {
-            auto end = line.find_last_of('#');
+            std::string_view line_view = line;
+            if (auto begin = line_view.find_first_not_of(' '); begin != std::string::npos)
+                line_view = line_view.substr(begin);
+
+            auto end = line_view.find_last_of('#');
             if (end == std::string::npos)
             {
-                stripped_log += line;
+                stripped_log += line_view;
                 stripped_log += '\n';
             }
             else
             {
-                std::string_view line_view = std::string_view(line).substr(0, end);
+                line_view = line_view.substr(0, end);
                 end = line_view.find_last_not_of(' ');
                 if (end != std::string::npos)
                 {
@@ -345,6 +352,7 @@ class Expect
 int main()
 {
     // * Test debug info (both static and dynamic, for the exact match).
+    // * Unique var names per yield point, test during deserialization.
     // * CI
     // * Test that we include all necessary headers.
     // * Test MSVC.
@@ -507,7 +515,6 @@ int main()
 
     { // A simple coroutine.
         auto x = RCORO({
-            // 1,2,3;
             {
                 RC_VAR(a, A(10));
                 (void)a;
@@ -598,6 +605,8 @@ int main()
             ...                          # Pause at `i`.
         )");
 
+        std::string state_dump;
+
         ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
         *test_detail::a_log += "...\n";
         ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" && !x.var_exists<"a">() &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
@@ -606,11 +615,75 @@ int main()
         {
             ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
             *test_detail::a_log += "...\n";
+
+            if (i == 1)
+            {
+                std::ostringstream ss;
+                ss << x;
+                state_dump = ss.str();
+            }
+
             ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
             *test_detail::a_log += "...\n";
         }
         ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 4 && x.yield_point_name() == "i" && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && !x());
         ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::success);
+
+        { // Debug info text.
+            { // Static.
+                std::ostringstream expected_ss;
+                expected_ss <<
+R"(copying: ctor=yes assign=yes
+moving: ctor=yes(nothrow) assign=yes(nothrow)
+frame: size=)" << rcoro::frame_size<X> << R"( align=)" << rcoro::frame_alignment<X> << R"(
+5 variables:
+  0. a, A<int>
+      offset=)" << rcoro::var_offset<X, 0> << R"(, size=)" << sizeof(rcoro::var_type<X, 0>) << R"(, align=)" << alignof(rcoro::var_type<X, 0>) << R"(
+  1. b, A<int>
+      offset=)" << rcoro::var_offset<X, 1> << R"(, size=)" << sizeof(rcoro::var_type<X, 1>) << R"(, align=)" << alignof(rcoro::var_type<X, 1>) << R"(
+  2. c, A<char>
+      offset=)" << rcoro::var_offset<X, 2> << R"(, size=)" << sizeof(rcoro::var_type<X, 2>) << R"(, align=)" << alignof(rcoro::var_type<X, 2>) << R"(
+  3. d, A<short>
+      offset=)" << rcoro::var_offset<X, 3> << R"(, size=)" << sizeof(rcoro::var_type<X, 3>) << R"(, align=)" << alignof(rcoro::var_type<X, 3>) << R"(
+      visible_vars: 2.c
+  4. e, A<int>
+      offset=)" << rcoro::var_offset<X, 4> << R"(, size=)" << sizeof(rcoro::var_type<X, 4>) << R"(, align=)" << alignof(rcoro::var_type<X, 4>) << R"(
+      visible_vars: 2.c
+5 yields:
+  0. ``
+  1. `f`, visible_vars: 1.b
+  2. `g`, visible_vars: 2.c, 3.d
+  3. `h`, visible_vars: 2.c, 4.e
+  4. `i`)";
+
+                std::ostringstream log_ss;
+                log_ss << rcoro::debug_info<X>;
+                std::string log = log_ss.str();
+                log = test_detail::string_replace(log, "short int", "short"); // GCC needs this, because it spells the type as `short int`.
+
+                if (log != expected_ss.str())
+                {
+                    std::cout << log << '\n';
+                    FAIL("Debug output mismatch (static)!");
+                }
+            }
+
+            { // Dynamic.
+                std::string expected =
+R"(yield_point = 3, `h`
+  0. a - dead
+  1. b - dead
+  2. c - alive but not printable
+  3. d - dead
+  4. e = 40)";
+
+                if (expected != state_dump)
+                {
+                    std::cout << state_dump;
+                    FAIL("Debug output mismatch (dynamic)!");
+                }
+            }
+        }
     }
 
     { // Reset and rewind.

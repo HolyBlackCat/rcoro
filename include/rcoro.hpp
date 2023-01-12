@@ -1361,12 +1361,20 @@ namespace rcoro
             detail::const_for<num_vars<specific_coro>>([&](auto varindex)
             {
                 constexpr int i = varindex.value;
-                s << "\n  " << i << ". " << var_name_const<specific_coro, i>.view() << " - " << (c.template var_exists<i>() ? "alive" : "dead"); // GCC 11 needs `template` here.
+                s << "\n  " << i << ". " << var_name_const<specific_coro, i>.view();
                 if constexpr (detail::Printable<var_type<specific_coro, i>, std::basic_ostream<A, B>>)
                 {
                     if (c.template var_exists<i>()) // GCC 11 needs `template` here.
-                        s << ", " << c.template var<i>(); // GCC 11 needs `template` here.
+                        s << " = " << c.template var<i>(); // GCC 11 needs `template` here.
                 }
+                else
+                {
+                    if (c.template var_exists<i>())
+                        s << " - alive but not printable";
+                }
+
+                if (!c.template var_exists<i>())
+                    s << " - dead";
             });
 
             return s;
@@ -1384,25 +1392,25 @@ namespace rcoro
             template <typename A, typename B>
             friend std::basic_ostream<A, B> &operator<<(std::basic_ostream<A, B> &s, DebugInfoPrinter)
             {
-                s << "copying: ctor=" << (!std::is_copy_constructible_v<specific_coro<T>> ? "no" : std::is_nothrow_copy_constructible_v<specific_coro<T>> ? "yes(nothrow)" : "yes")
-                  << " assign=" << (!std::is_copy_assignable_v<specific_coro<T>> ? "no" : std::is_nothrow_copy_assignable_v<specific_coro<T>> ? "yes(nothrow)" : "yes") << '\n';
-                s << "moving: ctor=" << (!std::is_move_constructible_v<specific_coro<T>> ? "no" : std::is_nothrow_move_constructible_v<specific_coro<T>> ? "yes(nothrow)" : "yes")
-                  << " assign=" << (!std::is_move_assignable_v<specific_coro<T>> ? "no" : std::is_nothrow_move_assignable_v<specific_coro<T>> ? "yes(nothrow)" : "yes") << '\n';
+                s << "copying: ctor=" << (!std::is_copy_constructible_v<T> ? "no" : std::is_nothrow_copy_constructible_v<T> ? "yes(nothrow)" : "yes")
+                  << " assign=" << (!std::is_copy_assignable_v<T> ? "no" : std::is_nothrow_copy_assignable_v<T> ? "yes(nothrow)" : "yes") << '\n';
+                s << "moving: ctor=" << (!std::is_move_constructible_v<T> ? "no" : std::is_nothrow_move_constructible_v<T> ? "yes(nothrow)" : "yes")
+                  << " assign=" << (!std::is_move_assignable_v<T> ? "no" : std::is_nothrow_move_assignable_v<T> ? "yes(nothrow)" : "yes") << '\n';
 
                 s << "frame: size=" << frame_size<T> << " align=" << frame_alignment<T> << '\n';
 
                 s << num_vars<T> << " variable" << (num_vars<T> != 1 ? "s" : "") << ":\n";
                 detail::const_for<num_vars<T>>([&](auto varindex)
                 {
-                    constexpr int i = varindex.value;
-                    s << "  " << i << ". " << var_name_const<T, i>.view() << ", " << detail::type_name<var_type<T, i>>() << '\n';
-                    s << "      offset=" << var_offset<T, i> << ", size=" << sizeof(var_type<T, i>) << ", align=" << alignof(var_type<T, i>) << '\n';
+                    constexpr int v = varindex.value;
+                    s << "  " << v << ". " << var_name_const<T, v>.view() << ", " << detail::type_name<var_type<T, v>>() << '\n';
+                    s << "      offset=" << var_offset<T, v> << ", size=" << sizeof(var_type<T, v>) << ", align=" << alignof(var_type<T, v>) << '\n';
 
                     bool first = true;
-                    detail::const_for<i>([&](auto sub_varindex)
+                    detail::const_for<v>([&](auto sub_varindex)
                     {
-                        constexpr int j = sub_varindex.value;
-                        if constexpr (var_lifetime_overlaps_var<T, i, j>)
+                        constexpr int v2 = sub_varindex.value;
+                        if constexpr (var_lifetime_overlaps_var<T, v, v2>)
                         {
                             if (first)
                             {
@@ -1411,29 +1419,27 @@ namespace rcoro
                             }
                             else
                                 s << ", ";
-                            s << j << "." << var_name_const<T, j>.view();
+                            s << v2 << "." << var_name_const<T, v2>.view();
                         }
                     });
                     if (!first)
                         s << '\n';
                 });
 
-                s << num_yields<T> << " yield" << (num_yields<T> != 1 ? "s" : "") << ":\n";
+                s << num_yields<T> << " yield" << (num_yields<T> != 1 ? "s" : "") << ":";
                 detail::const_for<num_yields<T>>([&](auto yieldindex)
                 {
-                    constexpr int i = yieldindex.value;
-                    s << "  " << i << ". `" << yield_name_const<T, i>.view() << "`";
-                    constexpr auto vars = yield_vars<T, i>;
-                    detail::const_for<vars.size()>([&](auto varindex)
+                    constexpr int y = yieldindex.value;
+                    s << "\n  " << y << ". `" << yield_name_const<T, y>.view() << "`";
+                    constexpr auto vars = yield_vars<T, y>;
+                    detail::const_for<vars.size()>([&](auto packed_varindex)
                     {
-                        constexpr int j = varindex.value;
-                        if (j == 0)
+                        if (packed_varindex.value == 0)
                             s << ", visible_vars: ";
                         else
                             s << ", ";
-                        s << j << "." << var_name_const<T, j>.view();
+                        s << vars[packed_varindex.value] << "." << var_name_const<T, vars[packed_varindex.value]>.view();
                     });
-                    s << '\n';
                 });
 
                 return s;

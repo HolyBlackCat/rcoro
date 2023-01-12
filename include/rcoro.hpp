@@ -24,10 +24,8 @@
 #include <cstddef>
 #include <exception>
 #include <iosfwd>
-#include <iterator>
 #include <memory>
 #include <new>
-#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <string>
@@ -432,7 +430,6 @@ namespace rcoro
         struct Frame : FrameBase<T>
         {
             static constexpr bool fake = Fake;
-            using marker_t = T;
 
             // The state enum.
             State state = State::reset;
@@ -641,7 +638,6 @@ namespace rcoro
         struct Frame<true, T>
         {
             static constexpr bool fake = true;
-            using marker_t = T;
 
             State state = State::reset;
             int pos = 0;
@@ -804,7 +800,8 @@ namespace rcoro
         auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
         if (it == arr.end() || it->first != name)
             return unknown_name;
-        auto next_it = std::next(it);
+        auto next_it = it;
+        ++next_it;
         if (next_it != arr.end() && next_it->first == name)
             return ambiguous_name;
         return it->second;
@@ -823,7 +820,8 @@ namespace rcoro
                 ret = unknown_name;
                 return;
             }
-            auto next_it = std::next(it);
+            auto next_it = it;
+            ++next_it;
             if (next_it != arr.end() && next_it->first == name)
             {
                 ret = ambiguous_name;
@@ -943,7 +941,8 @@ namespace rcoro
         auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
         if (it == arr.end() || it->first != name)
             return unknown_name;
-        auto next_it = std::next(it);
+        auto next_it = it;
+        ++next_it;
         if (next_it != arr.end() && next_it->first == name)
             return ambiguous_name;
         return it->second;

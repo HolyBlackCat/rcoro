@@ -46,42 +46,42 @@
 #define RCORO_VERSION 100
 
 // An assertion macro. If not customized, uses the standard `assert()`.
-#ifndef RC_ASSERT
+#ifndef RCORO_ASSERT
 #include <cassert>
-#define RC_ASSERT(expr) assert(expr)
+#define RCORO_ASSERT(expr) assert(expr)
 #endif
 
 // Aborts the program.
-#ifndef RC_ABORT
-#define RC_ABORT(text) do {assert(false && text); std::terminate();} while(false)
+#ifndef RCORO_ABORT
+#define RCORO_ABORT(text) do {assert(false && text); std::terminate();} while(false)
 #endif
 
 // 'Restrict' qualifier.
-#ifndef RC_RESTRICT
-#define RC_RESTRICT __restrict // There's also `__restrict__`, but that doesn't work on MSVC.
+#ifndef RCORO_RESTRICT
+#define RCORO_RESTRICT __restrict // There's also `__restrict__`, but that doesn't work on MSVC.
 #endif
 
 // An assumption.
-#ifndef RC_ASSUME
+#ifndef RCORO_ASSUME
 #if defined(__clang__)
-#define RC_ASSUME(...) __builtin_assume(__VA_ARGS__)
+#define RCORO_ASSUME(...) __builtin_assume(__VA_ARGS__)
 #elif defined(_MSC_VER)
-#define RC_ASSUME(...) __assume(__VA_ARGS__)
+#define RCORO_ASSUME(...) __assume(__VA_ARGS__)
 #else
-#define RC_ASSUME(...) (__VA_ARGS__ ? void() : __builtin_unreachable())
+#define RCORO_ASSUME(...) (__VA_ARGS__ ? void() : __builtin_unreachable())
 #endif
 #endif
 
 // Silences GCC's silly `-Wnon-template-friend` warning.
-#ifndef DETAIL_RCORO_TEMPLATE_FRIEND
+#ifndef RCORO_TEMPLATE_FRIEND
 #if defined(__GNUC__) && !defined(__clang__)
-#define DETAIL_RCORO_TEMPLATE_FRIEND(...) \
+#define RCORO_TEMPLATE_FRIEND(...) \
     _Pragma("GCC diagnostic push") \
     _Pragma("GCC diagnostic ignored \"-Wnon-template-friend\"") \
     __VA_ARGS__ \
     _Pragma("GCC diagnostic pop")
 #else
-#define DETAIL_RCORO_TEMPLATE_FRIEND(...) __VA_ARGS__
+#define RCORO_TEMPLATE_FRIEND(...) __VA_ARGS__
 #endif
 #endif
 
@@ -182,7 +182,7 @@ namespace rcoro
         template <auto N, typename F>
         constexpr void with_const_index(decltype(N) i, F &&func)
         {
-            RC_ASSERT(i >= 0 && i < N);
+            RCORO_ASSERT(i >= 0 && i < N);
             if constexpr (N > 0)
             {
                 constexpr auto arr = []<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
@@ -227,7 +227,7 @@ namespace rcoro
         template <bool Fake, typename T, int N>
         struct VarTypeReader
         {
-            DETAIL_RCORO_TEMPLATE_FRIEND(
+            RCORO_TEMPLATE_FRIEND(
             friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>);
             )
         };
@@ -262,7 +262,7 @@ namespace rcoro
         template <typename T, int N>
         struct VarVarReachReader
         {
-            DETAIL_RCORO_TEMPLATE_FRIEND(
+            RCORO_TEMPLATE_FRIEND(
             friend constexpr auto _adl_detail_rcoro_var_var_reach(VarVarReachReader<T, N>);
             )
         };
@@ -285,7 +285,7 @@ namespace rcoro
         template <typename T, int N>
         struct VarYieldReachReader
         {
-            DETAIL_RCORO_TEMPLATE_FRIEND(
+            RCORO_TEMPLATE_FRIEND(
             friend constexpr auto _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, N>);
             )
         };
@@ -464,7 +464,7 @@ namespace rcoro
             constexpr void reset() noexcept
             {
                 if (state >= State::_busy)
-                    RC_ABORT("Can't reset a busy coroutine.");
+                    RCORO_ABORT("Can't reset a busy coroutine.");
                 state = State::reset;
                 if (pos == 0) // Not strictly necessary, hopefully an optimization.
                     return;
@@ -554,7 +554,7 @@ namespace rcoro
                 if (&other == this)
                     return *this;
                 if (state >= State::_busy || other.state >= State::_busy)
-                    RC_ABORT("Can't copy a busy coroutine.");
+                    RCORO_ABORT("Can't copy a busy coroutine.");
                 reset();
                 handle_vars(other.pos,
                     [&](auto index, auto)
@@ -579,7 +579,7 @@ namespace rcoro
                 if (&other == this)
                     return *this;
                 if (state >= State::_busy || other.state >= State::_busy)
-                    RC_ABORT("Can't move a busy coroutine.");
+                    RCORO_ABORT("Can't move a busy coroutine.");
 
                 reset();
 
@@ -1325,11 +1325,11 @@ namespace rcoro
                 s << "finish_reason = ";
                 switch (c.finish_reason())
                 {
-                    case finish_reason::not_finished: RC_ASSERT(false); break;
+                    case finish_reason::not_finished: RCORO_ASSERT(false); break;
                     case finish_reason::reset:        s << "reset";      break;
                     case finish_reason::success:      s << "success";   break;
                     case finish_reason::exception:    s << "exception"; break;
-                    case finish_reason::_count:       RC_ASSERT(false); break;
+                    case finish_reason::_count:       RCORO_ASSERT(false); break;
                 }
                 return s;
             }
@@ -1458,9 +1458,9 @@ namespace rcoro
         }; \
         /* Fallback marker variables, used when checking reachibility from yield points. */\
         SF_FOR_EACH(DETAIL_RCORO_MARKERVARS_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
-        auto _rcoro_lambda = [](auto &RC_RESTRICT _rcoro_frame, int _rcoro_jump_to DETAIL_RCORO_LEADING_COMMA(DETAIL_RCORO_GET_PAR(DETAIL_RCORO_GET_PAR((__VA_ARGS__))))) \
+        auto _rcoro_lambda = [](auto &RCORO_RESTRICT _rcoro_frame, int _rcoro_jump_to DETAIL_RCORO_LEADING_COMMA(DETAIL_RCORO_GET_PAR(DETAIL_RCORO_GET_PAR((__VA_ARGS__))))) \
         { \
-            RC_ASSUME(_rcoro_jump_to >= 0 && _rcoro_jump_to < _rcoro_Marker::_rcoro_yields::size); \
+            RCORO_ASSUME(_rcoro_jump_to >= 0 && _rcoro_jump_to < _rcoro_Marker::_rcoro_yields::size); \
             using _rcoro_frame_t [[maybe_unused]] = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
             if (_rcoro_jump_to != 0) \
                 goto _rcoro_label_i; \
@@ -1572,7 +1572,7 @@ namespace rcoro
 #define DETAIL_RCORO_VAR_GUARD(varindex, name) \
     ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template var_exists<varindex>() ? &_rcoro_frame : nullptr)
 #define DETAIL_RCORO_VAR_REF(varindex, name) \
-    auto &RC_RESTRICT name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
+    auto &RCORO_RESTRICT name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
 #define DETAIL_RCORO_VAR_META(varindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
     (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{};

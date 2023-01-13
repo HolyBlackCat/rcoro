@@ -115,6 +115,8 @@ namespace rcoro
         success, // Finished normally.
         exception, // Finished because of an exception.
         _count [[maybe_unused]],
+        null = _count, // Some wrappers report this when they're null. Since this is not a valid value elsewhere, it's `>= _count`.
+        _extended_count [[maybe_unused]],
     };
 
     namespace detail
@@ -159,9 +161,60 @@ namespace rcoro
             success      = std::underlying_type_t<finish_reason>(finish_reason::success),
             exception    = std::underlying_type_t<finish_reason>(finish_reason::exception),
             // Our own members, for busy tasks.
-            _busy = std::underlying_type_t<finish_reason>(finish_reason::_count),
+            _busy = std::underlying_type_t<finish_reason>(finish_reason::_extended_count),
             running = _busy, // Currently running.
             pausing, // In the process of being paused.
+        };
+
+        // `specific_coro` adds this as a friend.
+        struct SpecificCoroFriend
+        {
+            template <typename T>
+            static State get_state(const T &coro)
+            {
+                return coro.frame.state;
+            }
+        };
+
+        // A CRTP base for inspecting the `State` enum.
+        template <typename Derived>
+        class BasicStateInterface
+        {
+          public:
+            // Examining coroutine state:
+
+            // Each coroutine can be either finished or not finished.
+            // If finished, it'll have a `finish_reason()` set, and will have `yield_point() == 0`.
+            // If not finished, it can either be `busy()` (currently executing) or not, and will have `yield_point() >= 0 && yield_point() < num_yields<T>`.
+            // Yield point 0 is special, it's automatically inserted at the beginning of a coroutine.
+
+            // Same as `!finished()`.
+            [[nodiscard]] explicit constexpr operator bool() const noexcept {return !finished();}
+
+            // Returns true if the coroutine is currently running and can't be manipulated.
+            [[nodiscard]] constexpr bool busy() const noexcept
+            {
+                return static_cast<const Derived *>(this)->_state_interface_enum() >= detail::State::_busy;
+            }
+
+            // Returns true if the coroutine has finished executing.
+            [[nodiscard]] constexpr bool finished() const noexcept
+            {
+                return !busy() && static_cast<const Derived *>(this)->_state_interface_enum() != detail::State::not_finished;
+            }
+
+            // Returns the reason why the coroutine has finished executing, or `not_finished` if not actually finished.
+            [[nodiscard]] constexpr rcoro::finish_reason finish_reason() const noexcept
+            {
+                return finished() ? rcoro::finish_reason(static_cast<const Derived *>(this)->_state_interface_enum()) : finish_reason::not_finished;
+            }
+
+            // Returns true if this coroutine can be resumed.
+            // Same as `!finished() && !busy()`.
+            [[nodiscard]] constexpr bool can_resume() const noexcept
+            {
+                return static_cast<const Derived *>(this)->_state_interface_enum() == detail::State::not_finished;
+            }
         };
 
         // Get the template parameter of a `specific_coro<T>`.
@@ -1022,9 +1075,15 @@ namespace rcoro
 
     // The coroutine class.
     template <detail::ValidCoroTypes T>
-    class specific_coro
+    class specific_coro : public detail::BasicStateInterface<specific_coro<T>>
     {
+        friend detail::SpecificCoroFriend;
+
         typename T::_rcoro_frame_t frame;
+
+        // `detail::BasicStateInterface` uses this.
+        friend detail::BasicStateInterface<specific_coro>;
+        constexpr detail::State _state_interface_enum() const noexcept {return frame.state;}
 
         // `load_unordered` uses this.
         // Can't define it inside of that function because of Clang bug: https://github.com/llvm/llvm-project/issues/59734
@@ -1057,42 +1116,40 @@ namespace rcoro
         // Copying, moving, and destroying abort the program if any of the involved coroutines are `busy()`.
         // Can't use exceptions for those errors, because then we lose `noexcept`ness (and using them only if `noexcept` is missing is lame).
 
+
+        // Zeroes the coroutine, destroying all variables. Throws if `busy()`. Returns `*this`.
+        constexpr specific_coro &reset() &
+        {
+            if (this->busy())
+                throw std::runtime_error("Can't reset a busy coroutine.");
+            frame.reset();
+            return *this;
+        }
+        constexpr specific_coro &&reset() &&
+        {
+            reset();
+            return std::move(*this);
+        }
+
         // Resets the coroutine to the initial position.
         // After this, `finished() == false` and `yield_point() == 0`.
         constexpr specific_coro  &rewind() &  {reset(); frame.state = detail::State::not_finished; return *this;}
         constexpr specific_coro &&rewind() && {rewind(); return std::move(*this);}
 
-        // Examining coroutine state:
-
-        // Each coroutine can be either finished or not finished.
-        // If finished, it'll have a `finish_reason()` set, and will have `yield_point() == 0`.
-        // If not finished, it can either be `busy()` (currently executing) or not, and will have `yield_point() >= 0 && yield_point() < num_yields<T>`.
-        // Yield point 0 is special, it's automatically inserted at the beginning of a coroutine.
-
-        // Same as `!finished()`.
-        [[nodiscard]] explicit constexpr operator bool() const noexcept {return !finished();}
-
-        // Returns true if the coroutine is currently running and can't be manipulated.
-        [[nodiscard]] constexpr bool busy() const noexcept {return frame.state >= detail::State::_busy;}
-
-        // Returns true if the coroutine has finished executing.
-        [[nodiscard]] constexpr bool finished() const noexcept {return !busy() && frame.state != detail::State::not_finished;}
-        // Returns the reason why the coroutine has finished executing, or `not_finished` if not actually finished.
-        [[nodiscard]] constexpr rcoro::finish_reason finish_reason() const noexcept {return finished() ? rcoro::finish_reason(frame.state) : finish_reason::not_finished;}
-
-        // Returns true if this coroutine can be resumed.
-        // Same as `!finished() && !busy()`.
-        [[nodiscard]] constexpr bool can_resume() const noexcept {return frame.state == detail::State::not_finished;}
 
         // Manipulating the coroutine:
+
+        // Returns true if the coroutine can be called with arguments `P...`.
+        template <typename ...P>
+        static constexpr bool callable_with_args = std::is_invocable_v<typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>;
 
         // Runs a single step of the coroutine.
         // Returns `*this`. Note that the return value is convertible to bool, returning `!finished()`.
         // Throws if `can_resume() == false`.
-        template <typename ...P> requires std::is_invocable_v<typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>
+        template <typename ...P> requires callable_with_args<P...>
         constexpr specific_coro &operator()(P &&... params) &
         {
-            if (!can_resume())
+            if (!this->can_resume())
                 throw std::runtime_error("This coroutine can't be resumed. It's either finished or busy.");
 
             frame.state = detail::State::running;
@@ -1131,24 +1188,10 @@ namespace rcoro
             }
             return *this;
         }
-        template <typename ...P> requires std::is_invocable_v<typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>
+        template <typename ...P> requires callable_with_args<P...>
         constexpr specific_coro &&operator()(P &&... params) &&
         {
             operator()(std::forward<P>(params)...);
-            return std::move(*this);
-        }
-
-        // Zeroes the coroutine, destroying all variables. Throws if `busy()`. Returns `*this`.
-        constexpr specific_coro &reset() &
-        {
-            if (busy())
-                throw std::runtime_error("Can't reset a busy coroutine.");
-            frame.reset();
-            return *this;
-        }
-        constexpr specific_coro &&reset() &&
-        {
-            reset();
             return std::move(*this);
         }
 
@@ -1160,7 +1203,7 @@ namespace rcoro
         template <int V>
         [[nodiscard]] constexpr bool var_exists() const
         {
-            if (busy())
+            if (this->busy())
                 throw std::runtime_error("Can't manipulate variables in a busy coroutine.");
             return frame.template var_exists<V>();
         }
@@ -1175,7 +1218,7 @@ namespace rcoro
         template <int V>
         [[nodiscard]] constexpr var_type<specific_coro, V> &var()
         {
-            if (busy())
+            if (this->busy())
                 throw std::runtime_error("Can't manipulate variables in a busy coroutine.");
             if (!frame.template var_exists<V>())
                 throw std::runtime_error("The coroutine variable `" + std::string(var_name_const<specific_coro, V>.view()) + "` doesn't exist at this point.");
@@ -1219,7 +1262,7 @@ namespace rcoro
         template <typename F>
         constexpr bool for_each_alive_var(F &&func) const
         {
-            if (busy())
+            if (this->busy())
                 throw std::runtime_error("Can't manipulate variables in a busy coroutine.");
             bool ret = false;
             if (frame.pos != 0) // Not strictly necessary, hopefully an optimization.
@@ -1392,11 +1435,12 @@ namespace rcoro
                 s << "finish_reason = ";
                 switch (c.finish_reason())
                 {
-                    case finish_reason::not_finished: RCORO_ASSERT(false); break;
-                    case finish_reason::reset:        s << "reset";      break;
-                    case finish_reason::success:      s << "success";   break;
-                    case finish_reason::exception:    s << "exception"; break;
-                    case finish_reason::_count:       RCORO_ASSERT(false); break;
+                    case finish_reason::not_finished:    RCORO_ASSERT(false); break;
+                    case finish_reason::reset:           s << "reset";      break;
+                    case finish_reason::success:         s << "success";   break;
+                    case finish_reason::exception:       s << "exception"; break;
+                    case finish_reason::null:            RCORO_ASSERT(false); break; // A non-type-erased coroutine can't be null.
+                    case finish_reason::_extended_count: RCORO_ASSERT(false); break;
                 }
                 return s;
             }
@@ -1504,6 +1548,94 @@ namespace rcoro
     // Print `debug_info<Coro>` to an `std::ostream` to get the debug information about a type.
     template <specific_coro_type T>
     constexpr detail::DebugInfoPrinter<T> debug_info;
+
+
+    // Wrappers.
+
+    template <typename Derived, typename ...P>
+    class basic_interface
+        // Not passing `Derived` directly here, because then it needs to `friend` the `BasicStateInterface`, which is annoying.
+        : public detail::BasicStateInterface<basic_interface<Derived, P...>>
+    {
+      protected:
+        struct vtable
+        {
+            detail::State (*internal_state)(const void *) = nullptr;
+            void (*reset)(void *) = nullptr;
+            void (*rewind)(void *) = nullptr;
+            void (*invoke)(void *, P &&...) = nullptr;
+
+            template <typename T>
+            constexpr void fill()
+            {
+                internal_state = [](const void *c){return detail::SpecificCoroFriend::get_state(*static_cast<const T *>(c));};
+                reset = [](void *c){static_cast<T *>(c)->reset();};
+                rewind = [](void *c){static_cast<T *>(c)->rewind();};
+                invoke = [](void *c, P &&... params){static_cast<T *>(c)->operator()(std::forward<P>(params)...);};
+            }
+        };
+
+        template <typename T>
+        static constexpr auto vtable_storage = []{typename Derived::vtable ret; ret.template fill<T>(); return ret;}();
+
+        const auto *basic_interface_vptr() const {return static_cast<const Derived *>(this)->_basic_interface_vptr();}
+              void *basic_interface_target()       {return static_cast<      Derived *>(this)->_basic_interface_target();}
+        const void *basic_interface_target() const {return static_cast<const Derived *>(this)->_basic_interface_target();}
+
+        // `detail::BasicStateInterface` uses this.
+        friend detail::BasicStateInterface<basic_interface<Derived, P...>>;
+        constexpr detail::State _state_interface_enum() const noexcept {return basic_interface_vptr() ? basic_interface_vptr()->internal_state(basic_interface_target()) : detail::State(finish_reason::null);}
+
+      public:
+        // No-op if null.
+        Derived &reset() & {if (basic_interface_vptr()) basic_interface_vptr()->reset(basic_interface_target()); return static_cast<Derived &>(*this);}
+        Derived &&reset() && {return std::move(reset());}
+        // Throws if null.
+        Derived &rewind() &
+        {
+            if (!basic_interface_vptr())
+                throw std::runtime_error("Can't rewind a null coroutine.");
+            basic_interface_vptr()->rewind(basic_interface_target());
+            return static_cast<Derived &>(*this);
+        }
+        Derived &&rewind() && {return std::move(rewind());}
+        // Throws if null.
+        Derived &operator()(P ...params) &
+        {
+            if (!basic_interface_vptr())
+                throw std::runtime_error("Can't call a null coroutine.");
+            basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
+            return static_cast<Derived &>(*this);
+        }
+        Derived &&operator()(P ...params) &&
+        {
+            if (!basic_interface_vptr())
+                throw std::runtime_error("Can't call a null coroutine.");
+            basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
+            return std::move(static_cast<Derived &>(*this));
+        }
+    };
+
+    template <typename ...P>
+    class view : public basic_interface<view<P...>, P...>
+    {
+        using base = basic_interface<view<P...>, P...>;
+        using vtable = typename base::vtable;
+        const vtable *vptr = nullptr;
+        void *target = nullptr;
+
+        // `basic_interface` uses this.
+        friend base;
+        const vtable *_basic_interface_vptr() const {return vptr;}
+        void *_basic_interface_target() const {return target;}
+
+      public:
+        constexpr view() noexcept {}
+        constexpr view(std::nullptr_t) noexcept {}
+
+        template <specific_coro_type T> requires T::template callable_with_args<P...>
+        constexpr view(T &coro) : vptr(&base::template vtable_storage<T>), target(&coro) {}
+    };
 }
 
 // Pause a coroutine. `ident` is a unique identifier for this yield point.

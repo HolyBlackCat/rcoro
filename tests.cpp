@@ -351,10 +351,12 @@ class Expect
 
 int main()
 {
+    // * Finish view(done), any, any_move_only.
     // * CI
     // * Test that we include all necessary headers.
     // * Test MSVC.
     // * Possible improvements:
+    //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
     //   * Noexcept checks and other stuff should ignore variables that aren't visible on any yield points.
     //   * `.var` and `.var_exists` should disambiguate variable names based on yield index.
@@ -2277,6 +2279,46 @@ R"(yield_point = 3, `h`
                 }
             }
         }
+    }
+
+    { // Type erasure.
+        auto x = RCORO((int a, int &b, int &&c)
+        {
+            b = a + c;
+        });
+
+        { // `view`.
+            rcoro::view<int, int &, int &&> y = x;
+
+            static_assert(std::is_same_v<decltype(          y .reset()), decltype(y) & >);
+            static_assert(std::is_same_v<decltype(std::move(y).reset()), decltype(y) &&>);
+            static_assert(std::is_same_v<decltype(          y .rewind()), decltype(y) & >);
+            static_assert(std::is_same_v<decltype(std::move(y).rewind()), decltype(y) &&>);
+            static_assert(std::is_same_v<decltype(          y (1, std::declval<int &>(), 2)), decltype(y) & >);
+            static_assert(std::is_same_v<decltype(std::move(y)(1, std::declval<int &>(), 2)), decltype(y) &&>);
+
+            ASSERT(y && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+            int result = 0;
+            ASSERT(!y(2, result, 3));
+            ASSERT(result == 5);
+            ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::success);
+
+            y.rewind();
+            ASSERT(y && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+
+            y.reset();
+            ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::reset);
+
+            y = nullptr;
+            ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
+            y.reset(); // Allowed.
+            std::move(y).reset(); // Allowed.
+            THROWS("null", y.rewind());
+            THROWS("null", std::move(y).rewind());
+            THROWS("null", y(2, result, 3));
+            THROWS("null", std::move(y)(2, result, 3));
+        }
+
     }
 
     std::cout << "OK\n";

@@ -249,6 +249,10 @@ namespace rcoro
             }(std::make_integer_sequence<decltype(N), N>{});
         }
 
+        // An internal helper for `with_const_index`.
+        template <auto I, typename F>
+        constexpr void with_const_index_helper(F &&func) {std::forward<F>(func)(std::integral_constant<decltype(I), I>{});}
+
         // Transforms a runtime index to a compile-time one. UB if out of bounds.
         // `func` is `?? func(int i)`. It's called with the current yield point index, if any.
         template <auto N, typename F>
@@ -258,7 +262,7 @@ namespace rcoro
             if constexpr (N > 0)
             {
                 constexpr auto arr = []<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
-                    return std::array<void (*)(F &&), N>{+[](F &&func){std::forward<F>(func)(std::integral_constant<decltype(N), I>{});}...};
+                    return std::array<void (*)(F &&), N>{with_const_index_helper<I, F>...};
                 }(std::make_integer_sequence<decltype(N), N>{});
                 arr[i](std::forward<F>(func));
             }
@@ -1861,10 +1865,11 @@ namespace rcoro
         /* GCC doesn't have a reasonable pragma to disable them, and Clang's pragma doesn't seem to work in a macro (hmm). */\
         /* Here we form a member-pointer to `operator()` to instantiate it. Don't want to call it in `if (false)`, because we don't know what to pass to user parameters. */\
         /* This also conveniently fails if there are any extra template parameters added by the user (i.e. implicitly, by using `auto` in parameters). */\
-        (void)&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<true, _rcoro_Marker>>; \
+        /* Note that we need `ValueTag<...>` here. Simply forming the pointer doesn't instantiate it in MSVC. */\
+        (void)::rcoro::detail::ValueTag<&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<true, _rcoro_Marker>>>{}; \
         /* The second pass instantiation. It would happen automatically when the coroutine is called, but then we miss out variable type information, */\
         /* which we can't properly collect in the first pass. See `VarTypeReader` and others for details. */\
-        (void)&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<false, _rcoro_Marker>>; \
+        (void)::rcoro::detail::ValueTag<&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<false, _rcoro_Marker>>>{}; \
         struct _rcoro_Types \
         { \
             using _rcoro_marker_t [[maybe_unused]] = _rcoro_Marker; \
@@ -1944,7 +1949,7 @@ namespace rcoro
     /* Stateful meta magic. This can be placed anywhere. */\
     DETAIL_RCORO_VAR_META(varindex, markers) \
     /* Force trailing semicolon. */\
-    void()
+    do {} while (false)
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) \
     if (void(DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__)), false) {} else \
   SF_CAT(_rcoro_label_, ident): \

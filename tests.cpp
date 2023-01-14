@@ -1,4 +1,6 @@
+#ifndef DETAIL_RCORO_HPP_ // Make this godbolt-friendly.
 #include <rcoro.hpp>
+#endif
 
 #include <cstdlib>
 #include <cstring>

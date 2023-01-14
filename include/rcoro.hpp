@@ -1552,18 +1552,13 @@ namespace rcoro
 
     // Wrappers.
 
-    template <typename Derived, typename ...P>
-    class basic_interface
-        // Not passing `Derived` directly here, because then it needs to `friend` the `BasicStateInterface`, which is annoying.
-        : public detail::BasicStateInterface<basic_interface<Derived, P...>>
+    namespace type_erasure_bits
     {
-      protected:
-        struct vtable
+        struct basic_vtable
         {
             detail::State (*internal_state)(const void *) = nullptr;
             void (*reset)(void *) = nullptr;
             void (*rewind)(void *) = nullptr;
-            void (*invoke)(void *, P &&...) = nullptr;
 
             template <typename T>
             constexpr void fill()
@@ -1571,70 +1566,255 @@ namespace rcoro
                 internal_state = [](const void *c){return detail::SpecificCoroFriend::get_state(*static_cast<const T *>(c));};
                 reset = [](void *c){static_cast<T *>(c)->reset();};
                 rewind = [](void *c){static_cast<T *>(c)->rewind();};
+            }
+        };
+
+        template <typename T, typename Vtable> requires std::is_base_of_v<basic_vtable, Vtable>
+        constexpr Vtable vtable_storage = []{Vtable ret; ret.template fill<T>(); return ret;}();
+
+
+        template <typename ...P>
+        struct basic_interface_vtable : basic_vtable
+        {
+            void (*invoke)(void *, P &&...) = nullptr;
+
+            template <typename T>
+            constexpr void fill()
+            {
+                basic_vtable::fill<T>();
                 invoke = [](void *c, P &&... params){static_cast<T *>(c)->operator()(std::forward<P>(params)...);};
             }
         };
 
-        template <typename T>
-        static constexpr auto vtable_storage = []{typename Derived::vtable ret; ret.template fill<T>(); return ret;}();
+        template <typename Derived, typename Vtable, typename ...P>
+        class basic_interface
+            // Not passing `Derived` directly here, because then it needs to `friend` the `BasicStateInterface`, which is annoying.
+            : public detail::BasicStateInterface<basic_interface<Derived, Vtable, P...>>
+        {
+          protected:
+            const Vtable *basic_interface_vptr() const {return static_cast<const Derived *>(this)->_basic_interface_vptr();}
+                  void *basic_interface_target()       {return static_cast<      Derived *>(this)->_basic_interface_target();}
+            const void *basic_interface_target() const {return static_cast<const Derived *>(this)->_basic_interface_target();}
 
-        const auto *basic_interface_vptr() const {return static_cast<const Derived *>(this)->_basic_interface_vptr();}
-              void *basic_interface_target()       {return static_cast<      Derived *>(this)->_basic_interface_target();}
-        const void *basic_interface_target() const {return static_cast<const Derived *>(this)->_basic_interface_target();}
+            // `detail::BasicStateInterface` uses this.
+            friend detail::BasicStateInterface<basic_interface>;
+            constexpr detail::State _state_interface_enum() const noexcept {return basic_interface_vptr() ? basic_interface_vptr()->internal_state(basic_interface_target()) : detail::State(finish_reason::null);}
 
-        // `detail::BasicStateInterface` uses this.
-        friend detail::BasicStateInterface<basic_interface<Derived, P...>>;
-        constexpr detail::State _state_interface_enum() const noexcept {return basic_interface_vptr() ? basic_interface_vptr()->internal_state(basic_interface_target()) : detail::State(finish_reason::null);}
+          public:
+            // No-op if null.
+            Derived &reset() & {if (basic_interface_vptr()) basic_interface_vptr()->reset(basic_interface_target()); return static_cast<Derived &>(*this);}
+            Derived &&reset() && {return std::move(reset());}
+            // Throws if null.
+            Derived &rewind() &
+            {
+                if (!basic_interface_vptr())
+                    throw std::runtime_error("Can't rewind a null coroutine.");
+                basic_interface_vptr()->rewind(basic_interface_target());
+                return static_cast<Derived &>(*this);
+            }
+            Derived &&rewind() && {return std::move(rewind());}
+            // Throws if null.
+            Derived &operator()(P ...params) &
+            {
+                if (!basic_interface_vptr())
+                    throw std::runtime_error("Can't call a null coroutine.");
+                basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
+                return static_cast<Derived &>(*this);
+            }
+            Derived &&operator()(P ...params) &&
+            {
+                if (!basic_interface_vptr())
+                    throw std::runtime_error("Can't call a null coroutine.");
+                basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
+                return std::move(static_cast<Derived &>(*this));
+            }
+        };
 
+
+        template <typename ...P> using basic_view_vtable = basic_interface_vtable<P...>;
+
+        template <typename Derived, typename Vtable, typename ...P>
+        class basic_view : public basic_interface<Derived, Vtable, P...>
+        {
+            using base = basic_interface<Derived, Vtable, P...>;
+
+          public:
+            const Vtable *vptr = nullptr;
+            void *target = nullptr;
+
+            // `basic_interface` uses this.
+            friend base;
+            const Vtable *_basic_interface_vptr() const {return vptr;}
+            void *_basic_interface_target() const {return target;}
+
+          public:
+            constexpr basic_view() noexcept {}
+            constexpr basic_view(std::nullptr_t) noexcept {}
+
+            template <specific_coro_type T> requires T::template callable_with_args<P...>
+            constexpr basic_view(T &coro) : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
+            template <specific_coro_type T> requires T::template callable_with_args<P...>
+            constexpr basic_view(T &&coro) : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
+        };
+
+
+        template <typename ...P>
+        struct basic_any_noncopyable_vtable : basic_interface_vtable<P...>
+        {
+            void (*destroy_at)(void *) noexcept = nullptr;
+
+            template <typename T>
+            constexpr void fill()
+            {
+                basic_interface_vtable<P...>::template fill<T>();
+                destroy_at = [](void *c) noexcept
+                {
+                    std::destroy_at(static_cast<T *>(c));
+                };
+            }
+        };
+
+        template <typename Derived, typename Vtable, typename ...P>
+        class basic_any_noncopyable : public basic_interface<Derived, Vtable, P...>
+        {
+            using base = basic_interface<Derived, Vtable, P...>;
+
+          protected:
+            const Vtable *vptr = nullptr;
+            void *memory = nullptr;
+
+            // `basic_interface` uses this.
+            friend base;
+            const Vtable *_basic_interface_vptr() const {return vptr;}
+            void *_basic_interface_target() const {return memory;}
+
+          public:
+            constexpr basic_any_noncopyable() {}
+            constexpr basic_any_noncopyable(std::nullptr_t) {}
+
+            template <typename T>
+            requires specific_coro_type<std::remove_cvref_t<T>> && std::remove_cvref_t<T>::template callable_with_args<P...>
+            constexpr basic_any_noncopyable(T &&coro)
+            {
+                using type = std::remove_cvref_t<T>;
+                static_assert(alignof(type) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__, "Overaligned types are not supported.");
+
+                vptr = &vtable_storage<type, Vtable>;
+                memory = operator new(sizeof(type));
+                struct Guard
+                {
+                    basic_any_noncopyable &self;
+                    bool fail = true;
+                    ~Guard()
+                    {
+                        if (fail)
+                            operator delete(self.memory);
+                    }
+                };
+                Guard guard{.self = *this};
+                std::construct_at(reinterpret_cast<type *>(memory), std::forward<T>(coro));
+                guard.fail = false;
+            }
+
+            constexpr basic_any_noncopyable(basic_any_noncopyable &&other) noexcept
+                : vptr(std::exchange(other.vptr, {})), memory(std::exchange(other.memory, {}))
+            {}
+
+            constexpr basic_any_noncopyable &operator=(basic_any_noncopyable other) noexcept
+            {
+                swap(*this, other);
+                return *this;
+            }
+
+            friend constexpr void swap(basic_any_noncopyable &a, basic_any_noncopyable &b) noexcept
+            {
+                std::swap(a.vptr, b.vptr);
+                std::swap(a.memory, b.memory);
+            }
+
+            ~basic_any_noncopyable()
+            {
+                if (vptr)
+                {
+                    vptr->destroy_at(memory);
+                    operator delete(memory);
+                }
+            }
+        };
+
+
+        template <typename ...P>
+        struct basic_any_vtable : basic_any_noncopyable_vtable<P...>
+        {
+            void *(*copy_construct)(const void *) = nullptr;
+
+            template <typename T>
+            constexpr void fill()
+            {
+                basic_any_noncopyable_vtable<P...>::template fill<T>();
+                copy_construct = [](const void *c)
+                {
+                    struct Guard
+                    {
+                        void *ret = nullptr;
+                        bool fail = true;
+                        ~Guard()
+                        {
+                            if (fail)
+                                operator delete(ret);
+                        }
+                    };
+                    Guard guard;
+                    guard.ret = operator new(sizeof(T));
+                    std::construct_at(static_cast<T *>(guard.ret), *static_cast<const T *>(c));
+                    guard.fail = false;
+                    return guard.ret;
+                };
+            }
+        };
+
+        template <typename Derived, typename Vtable, typename ...P>
+        class basic_any : public basic_any_noncopyable<Derived, Vtable, P...>
+        {
+            using base = basic_any_noncopyable<Derived, Vtable, P...>;
+
+          public:
+            using base::base;
+
+            constexpr basic_any(const basic_any &other)
+            {
+                this->memory = other.vptr->copy_construct(other.memory);
+                this->vptr = other.vptr;
+            }
+            constexpr basic_any(basic_any &&other) noexcept = default;
+
+            constexpr basic_any &operator=(basic_any other) noexcept
+            {
+                swap(static_cast<base &>(*this), static_cast<base &>(other));
+                return *this;
+            }
+        };
+    }
+
+    template <typename ...P>
+    class view : public type_erasure_bits::basic_view<view<P...>, type_erasure_bits::basic_view_vtable<P...>, P...>
+    {
       public:
-        // No-op if null.
-        Derived &reset() & {if (basic_interface_vptr()) basic_interface_vptr()->reset(basic_interface_target()); return static_cast<Derived &>(*this);}
-        Derived &&reset() && {return std::move(reset());}
-        // Throws if null.
-        Derived &rewind() &
-        {
-            if (!basic_interface_vptr())
-                throw std::runtime_error("Can't rewind a null coroutine.");
-            basic_interface_vptr()->rewind(basic_interface_target());
-            return static_cast<Derived &>(*this);
-        }
-        Derived &&rewind() && {return std::move(rewind());}
-        // Throws if null.
-        Derived &operator()(P ...params) &
-        {
-            if (!basic_interface_vptr())
-                throw std::runtime_error("Can't call a null coroutine.");
-            basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
-            return static_cast<Derived &>(*this);
-        }
-        Derived &&operator()(P ...params) &&
-        {
-            if (!basic_interface_vptr())
-                throw std::runtime_error("Can't call a null coroutine.");
-            basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
-            return std::move(static_cast<Derived &>(*this));
-        }
+        using type_erasure_bits::basic_view<view<P...>, type_erasure_bits::basic_view_vtable<P...>, P...>::basic_view;
     };
 
     template <typename ...P>
-    class view : public basic_interface<view<P...>, P...>
+    class any_noncopyable : public type_erasure_bits::basic_any_noncopyable<any_noncopyable<P...>, type_erasure_bits::basic_any_noncopyable_vtable<P...>, P...>
     {
-        using base = basic_interface<view<P...>, P...>;
-        using vtable = typename base::vtable;
-        const vtable *vptr = nullptr;
-        void *target = nullptr;
-
-        // `basic_interface` uses this.
-        friend base;
-        const vtable *_basic_interface_vptr() const {return vptr;}
-        void *_basic_interface_target() const {return target;}
-
       public:
-        constexpr view() noexcept {}
-        constexpr view(std::nullptr_t) noexcept {}
+        using type_erasure_bits::basic_any_noncopyable<any_noncopyable<P...>, type_erasure_bits::basic_any_noncopyable_vtable<P...>, P...>::basic_any_noncopyable;
+    };
 
-        template <specific_coro_type T> requires T::template callable_with_args<P...>
-        constexpr view(T &coro) : vptr(&base::template vtable_storage<T>), target(&coro) {}
+    template <typename ...P>
+    class any : public type_erasure_bits::basic_any<any<P...>, type_erasure_bits::basic_any_vtable<P...>, P...>
+    {
+      public:
+        using type_erasure_bits::basic_any<any<P...>, type_erasure_bits::basic_any_vtable<P...>, P...>::basic_any;
     };
 }
 
@@ -1652,7 +1832,8 @@ namespace rcoro
 #define RC_WITH_VAR(name, .../*init*/) )(withvar,name,__VA_ARGS__)(code,
 // `RC_FOR((name, init); cond; step) {...}` is equivalent to `RC_WITH_VAR(name, init) for(; cond; step) {...}`.
 #define RC_FOR(...) DETAIL_RCORO_CALL(RC_WITH_VAR, DETAIL_RCORO_GET_PAR(__VA_ARGS__)) for (DETAIL_RCORO_SKIP_PAR(__VA_ARGS__))
-// Creates a coroutine.
+// Creates a coroutine. Usage: `RCORO({...})` or `RCORO((params...){...})`.
+// In any case, the braces are optional, and are pasted into the coroutine body as is. They help with clang-format.
 #define RCORO(...) \
     [&]{ \
         /* A marker for stateful templates. */\

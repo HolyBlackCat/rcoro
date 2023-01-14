@@ -351,15 +351,20 @@ class Expect
 
 int main()
 {
-    // * Finish view(done), any, any_move_only.
+    // * Test `any[_noncopyable]` rule of five.
+    // * Test `any` like `any_noncopyable`
+    // * Test: copy throws when: 1. constructing wrapper, 2. copying wrapper
+    // * Test any[_noncopyable]: move ops are nothrow, copy ops are not
+
     // * CI
     // * Test that we include all necessary headers.
     // * Test MSVC.
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
-    //   * Noexcept checks and other stuff should ignore variables that aren't visible on any yield points.
+    //   * Ignore variables that aren't visible on any yield points.
     //   * `.var` and `.var_exists` should disambiguate variable names based on yield index.
+    //   * Overaligned heap allocation?
 
     // Make sure our macros prefix everything with `::`.
     [[maybe_unused]] int std, rcoro, detail;
@@ -2282,13 +2287,14 @@ R"(yield_point = 3, `h`
     }
 
     { // Type erasure.
-        auto x = RCORO((int a, int &b, int &&c)
-        {
-            b = a + c;
-        });
-
         { // `view`.
+            auto x = RCORO((int a, int &b, int &&c)
+            {
+                b = a + c;
+            });
+
             rcoro::view<int, int &, int &&> y = x;
+            y = std::move(x); // Test that rvalues work too.
 
             static_assert(std::is_same_v<decltype(          y .reset()), decltype(y) & >);
             static_assert(std::is_same_v<decltype(std::move(y).reset()), decltype(y) &&>);
@@ -2319,6 +2325,69 @@ R"(yield_point = 3, `h`
             THROWS("null", std::move(y)(2, result, 3));
         }
 
+        { // `any_noncopyable`
+            Expect ex(R"(
+                A<int>::A(0)                # i=0
+                A<int>::A(1)                # i=1
+                A<int>::operator=(A && = 1) # ^
+                A<int>::~A(-1)              # ^
+                ... wrap
+                A<int>::A(const A & = 1)
+                ... call wrapper
+                A<int>::A(2)
+                A<int>::operator=(A && = 2)
+                A<int>::~A(-2)
+                ... reassign wrapper
+                A<int>::A(A && = 1) # copy into the by-value parameter
+                A<int>::~A(-1)      # destroy source object
+                A<int>::~A(2)       # destroy old value
+                ... call wrapper
+                A<int>::A(2)
+                A<int>::operator=(A && = 2)
+                A<int>::~A(-2)
+                ... done
+                A<int>::~A(2) # Wrapper dies. The original is already moved-from.
+            )");
+
+            auto x = RCORO((int *out = nullptr)
+            {
+                RC_FOR((i, A(0)); int(i) < 5; i = int(i) + 1)
+                {
+                    if (out)
+                        *out = int(i) * 10;
+                    RC_YIELD();
+                }
+            });
+
+            x()();
+
+            *test_detail::a_log += "... wrap\n";
+            rcoro::any_noncopyable<int *> y = x;
+            ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+            *test_detail::a_log += "... call wrapper\n";
+            int result = 0;
+            y(&result);
+            ASSERT(result == 20);
+            *test_detail::a_log += "... reassign wrapper\n";
+            y = std::move(x);
+            *test_detail::a_log += "... call wrapper\n";
+            result = 0;
+            y(&result);
+            ASSERT(result == 20);
+            *test_detail::a_log += "... done\n";
+
+            { // Null wrapper.
+                rcoro::any_noncopyable<> z;
+                ASSERT(!z && !z.busy() && z.finished() && z.finish_reason() == rcoro::finish_reason::null);
+                z.reset(); // No-op.
+                std::move(z).reset(); // No-op.
+                ASSERT(!z && !z.busy() && z.finished() && z.finish_reason() == rcoro::finish_reason::null);
+                THROWS("null", z.rewind());
+                THROWS("null", std::move(z).rewind());
+                THROWS("null", z());
+                THROWS("null", std::move(z)());
+            }
+        }
     }
 
     std::cout << "OK\n";

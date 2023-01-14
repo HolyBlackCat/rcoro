@@ -545,9 +545,12 @@ namespace rcoro
                     return;
                 with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
                 {
-                    constexpr auto indices = vars_reachable_from_yield<T, yieldindex.value>();
-                    const_reverse_for<indices.size()>([&](auto varindex)
+                    constexpr auto num_indices = vars_reachable_from_yield<T, yieldindex.value>().size();
+                    const_reverse_for<num_indices>([&](auto varindex)
                     {
+                        // MSVC doesn't see this variable if we declare it outside of the lambda,
+                        // so we either have to duplicate the declaration, or call the helper function twice.
+                        constexpr auto indices = vars_reachable_from_yield<T, yieldindex.value>();
                         std::destroy_at(&var<indices[varindex.value]>());
                     });
                 });
@@ -589,12 +592,14 @@ namespace rcoro
                 bool ret = false;
                 with_const_index<NumYields<T>::value>(pos, [&](auto yield)
                 {
-                    constexpr auto indices = vars_reachable_from_yield<T, yield.value>();
+                    constexpr auto num_indices = vars_reachable_from_yield<T, yield.value>().size();
 
                     HandleVarsGuard<G, yield.value> guard{.rollback = rollback};
 
-                    bool fail = const_any_of<indices.size()>([&](auto var)
+                    bool fail = const_any_of<num_indices>([&](auto var)
                     {
+                        constexpr auto indices = vars_reachable_from_yield<T, yield.value>();
+
                         bool already_incremented = false;
                         bool stop = func(std::integral_constant<int, indices[var.value]>{}, [&]{
                             if (already_incremented)
@@ -765,6 +770,8 @@ namespace rcoro
             std::array<std::pair<std::string_view, int>, indices.size()> ret{};
             const_for<indices.size()>([&](auto index)
             {
+                // MSVC doesn't see `indices` from above here, so we repeat the definition.
+                constexpr auto indices = vars_reachable_from_yield<T, Y>();
                 constexpr int i = index.value;
                 ret[i].first = VarName<T, indices[i]>::value.view();
                 ret[i].second = indices[i];
@@ -1273,9 +1280,10 @@ namespace rcoro
             {
                 detail::with_const_index<num_yields<specific_coro>>(frame.pos, [&](auto yieldindex)
                 {
-                    constexpr auto indices = yield_vars<specific_coro, yieldindex.value>;
-                    ret = detail::const_any_of<indices.size()>([&](auto varindex)
+                    constexpr auto num_indices = yield_vars<specific_coro, yieldindex.value>.size();
+                    ret = detail::const_any_of<num_indices>([&](auto varindex)
                     {
+                        constexpr auto indices = yield_vars<specific_coro, yieldindex.value>;
                         return bool(func(std::integral_constant<int, indices[varindex.value]>{}));
                     });
                 });
@@ -1393,6 +1401,8 @@ namespace rcoro
 
                     bool ok = std::forward<F>(func)([&](int var_index, auto &&... extra)
                     {
+                        constexpr int yield_index = yield_index_const.value; // Redefine for buggy MSVC.
+
                         if (var_index < 0 || var_index >= num_vars<specific_coro>)
                             throw std::runtime_error("Coroutine variable index is out of range.");
                         auto it = std::lower_bound(yield_vars<specific_coro, yield_index>.begin(), yield_vars<specific_coro, yield_index>.end(), var_index);
@@ -1404,7 +1414,8 @@ namespace rcoro
 
                         detail::with_const_index<yield_vars<specific_coro, yield_index>.size()>(packed_var_index, [&](auto packed_var_index_const)
                         {
-                            static constexpr auto var_index_const = std::integral_constant<int, yield_vars<specific_coro, yield_index>[packed_var_index_const.value]>{};
+                            static constexpr auto var_index_const =
+                                std::integral_constant<int, yield_vars<specific_coro, yield_index_const.value>[packed_var_index_const.value]>{};
                             // This trick forces the return type to be `void`.
                             false ? void() : load_var(var_index_const, [&]<typename ...P>(P &&... params)
                             {
@@ -1511,6 +1522,7 @@ namespace rcoro
                     bool first = true;
                     detail::const_for<v>([&](auto sub_varindex)
                     {
+                        constexpr int v = varindex.value; // Redeclare for buggy MSVC.
                         constexpr int v2 = sub_varindex.value;
                         if constexpr (var_lifetime_overlaps_var<T, v, v2>)
                         {
@@ -1533,14 +1545,14 @@ namespace rcoro
                 {
                     constexpr int y = yieldindex.value;
                     s << "\n  " << y << ". `" << yield_name_const<T, y>.view() << "`";
-                    constexpr auto vars = yield_vars<T, y>;
-                    detail::const_for<vars.size()>([&](auto packed_varindex)
+                    detail::const_for<yield_vars<T, y>.size()>([&](auto packed_varindex)
                     {
                         if (packed_varindex.value == 0)
                             s << ", visible_vars: ";
                         else
                             s << ", ";
-                        s << vars[packed_varindex.value] << "." << var_name_const<T, vars[packed_varindex.value]>.view();
+                        constexpr auto varindex = yield_vars<T, yieldindex.value>[packed_varindex.value];
+                        s << varindex << "." << var_name_const<T, varindex>.view();
                     });
                 });
 
@@ -1928,14 +1940,18 @@ namespace rcoro
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) \
     /* Make sure we're not preceded by an if/for/while/etc. */\
     /* The test is performed by having two separate statements, where the latter needs the former to be visible to compile. */\
-    /* Note that `[[maybe_unused]]` is not strictly necessary, but it removes an extra useless warning when this check fails. */\
-    /* The rcorond variable also serves as a scope checker for yields. */\
+    /* Note that the first `[[maybe_unused]]` is not strictly necessary, but it removes an extra useless warning when this check fails. */\
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))) = true; \
-    [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
+    [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_CheckBracesAroundDeclarationOf_, name))) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
     /* If we're not jumping, initialize the variable. */\
     DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__); \
     /* Jump target. */\
   SF_CAT(_rcoro_label_, ident): \
+    /* The scope marker for `RC_YIELD()`. This used to be combined with one of the two `...CheckBraces...` variables above, */\
+    /* but MSVC has a bug where a static constexpr variable can't shadow another one, and silently returns the original value. */\
+    /* Because of that, this must be non-static. And since `goto` can't jump over init of non-static constexpr variables, */\
+    /* we can no longer combine those. */\
+    [[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; \
     /* This will destroy the variable when it goes out of scope. */\
     DETAIL_RCORO_VAR_GUARD(varindex, name); \
     /* Create a reference as a fancy name for our storage variable. */\
@@ -1953,10 +1969,12 @@ namespace rcoro
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) \
     if (void(DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__)), false) {} else \
   SF_CAT(_rcoro_label_, ident): \
-    if ([[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
+    if (constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
     if (DETAIL_RCORO_VAR_GUARD(varindex, name); false) {} else \
     if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != 0) \
     { \
+        /* MSVC doesn't like an attribute plus `; cond` in an `if`-statement, so we do it the old way. */\
+        (void)DETAIL_RCORO_MARKER_VAR_NAME(ident); \
         DETAIL_RCORO_VAR_META(varindex, markers) \
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
     } \

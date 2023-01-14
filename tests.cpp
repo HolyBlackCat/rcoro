@@ -980,7 +980,7 @@ R"(yield_point = 3, `h`
 
     { // Rule of five.
         enum class kind {start, yield, exception, _count};
-        constexpr const char *kind_names[] = {"start", "yield", "exception"};
+        static constexpr const char *kind_names[] = {"start", "yield", "exception"};
         static_assert(std::size(kind_names) == std::size_t(kind::_count));
 
         auto lambda = [&](auto move, auto assign, kind source_kind, kind target_kind)
@@ -1227,7 +1227,7 @@ R"(yield_point = 3, `h`
     { // Rule of five: the lack of `std::move_if_noexcept`.
         auto lambda = [](auto current_ops_param)
         {
-            constexpr ops current_ops = current_ops_param.value;
+            static constexpr ops current_ops = current_ops_param.value;
             auto x = RCORO(RC_VAR(a, B<int, current_ops>(1)); (void)a; RC_YIELD(););
 
             Expect ex(

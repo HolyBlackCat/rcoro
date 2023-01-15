@@ -362,15 +362,9 @@ class Expect
 
 int main()
 {
-    // * Any's copy ctor should SFINAE reject non-copyable coros.
-    // * Test `any[_noncopyable]` rule of five.
-    // * Test `any` like `any_noncopyable`
     // * Test: copy throws when: 1. constructing wrapper, 2. copying wrapper
     // * Test any[_noncopyable]: move ops are nothrow, copy ops are not
 
-    // * CI
-    // * Test that we include all necessary headers.
-    // * Test MSVC.
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
@@ -2338,56 +2332,58 @@ R"(yield_point = 3, `h`
             THROWS("null", std::move(y)(2, result, 3));
         }
 
-        { // `any_noncopyable`
-            Expect ex(R"(
-                A<int>::A(0)                # i=0
-                A<int>::A(1)                # i=1
-                A<int>::operator=(A && = 1) # ^
-                A<int>::~A(-1)              # ^
-                ... wrap
-                A<int>::A(const A & = 1)
-                ... call wrapper
-                A<int>::A(2)
-                A<int>::operator=(A && = 2)
-                A<int>::~A(-2)
-                ... reassign wrapper
-                A<int>::A(A && = 1) # copy into the by-value parameter
-                A<int>::~A(-1)      # destroy source object
-                A<int>::~A(2)       # destroy old value
-                ... call wrapper
-                A<int>::A(2)
-                A<int>::operator=(A && = 2)
-                A<int>::~A(-2)
-                ... done
-                A<int>::~A(2) # Wrapper dies. The original is already moved-from.
-            )");
+        { // `any_noncopyable`.
+            { // Basic test.
+                Expect ex(R"(
+                    A<int>::A(0)                # i=0
+                    A<int>::A(1)                # i=1
+                    A<int>::operator=(A && = 1) # ^
+                    A<int>::~A(-1)              # ^
+                    ... wrap
+                    A<int>::A(const A & = 1)
+                    ... call wrapper
+                    A<int>::A(2)
+                    A<int>::operator=(A && = 2)
+                    A<int>::~A(-2)
+                    ... reassign wrapper
+                    A<int>::A(A && = 1) # copy into the by-value parameter
+                    A<int>::~A(-1)      # destroy source object
+                    A<int>::~A(2)       # destroy old value
+                    ... call wrapper
+                    A<int>::A(2)
+                    A<int>::operator=(A && = 2)
+                    A<int>::~A(-2)
+                    ... done
+                    A<int>::~A(2) # Wrapper dies. The original is already moved-from.
+                )");
 
-            auto x = RCORO((int *out = nullptr)
-            {
-                RC_FOR((i, A(0)); int(i) < 5; i = int(i) + 1)
+                auto x = RCORO((int *out = nullptr)
                 {
-                    if (out)
-                        *out = int(i) * 10;
-                    RC_YIELD();
-                }
-            });
+                    RC_FOR((i, A(0)); int(i) < 5; i = int(i) + 1)
+                    {
+                        if (out)
+                            *out = int(i) * 10;
+                        RC_YIELD();
+                    }
+                });
 
-            x()();
+                x()();
 
-            *test_detail::a_log += "... wrap\n";
-            rcoro::any_noncopyable<int *> y = x;
-            ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
-            *test_detail::a_log += "... call wrapper\n";
-            int result = 0;
-            y(&result);
-            ASSERT(result == 20);
-            *test_detail::a_log += "... reassign wrapper\n";
-            y = std::move(x);
-            *test_detail::a_log += "... call wrapper\n";
-            result = 0;
-            y(&result);
-            ASSERT(result == 20);
-            *test_detail::a_log += "... done\n";
+                *test_detail::a_log += "... wrap\n";
+                rcoro::any_noncopyable<int *> y = x;
+                ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+                *test_detail::a_log += "... call wrapper\n";
+                int result = 0;
+                y(&result);
+                ASSERT(result == 20);
+                *test_detail::a_log += "... reassign wrapper\n";
+                y = std::move(x);
+                *test_detail::a_log += "... call wrapper\n";
+                result = 0;
+                y(&result);
+                ASSERT(result == 20);
+                *test_detail::a_log += "... done\n";
+            }
 
             { // Null wrapper.
                 rcoro::any_noncopyable<> z;
@@ -2399,6 +2395,85 @@ R"(yield_point = 3, `h`
                 THROWS("null", std::move(z).rewind());
                 THROWS("null", z());
                 THROWS("null", std::move(z)());
+            }
+        }
+
+        { // `any`.
+            { // Basic test.
+                Expect ex(R"(
+                    A<int>::A(0)                # i=0
+                    A<int>::A(1)                # i=1
+                    A<int>::operator=(A && = 1) # ^
+                    A<int>::~A(-1)              # ^
+                    ... wrap
+                    A<int>::A(const A & = 1)
+                    ... copy wrapper
+                    A<int>::A(const A & = 1)
+                    ... call wrapper
+                    A<int>::A(2)
+                    A<int>::operator=(A && = 2)
+                    A<int>::~A(-2)
+                    ... reassign wrapper
+                    A<int>::A(const A & = 1) # First, make a copy.
+                    A<int>::~A(2)            # Then destroy the target. No move is visible because we're on the heap.
+                    ... call wrapper
+                    A<int>::A(2)
+                    A<int>::operator=(A && = 2)
+                    A<int>::~A(-2)
+                    ... done
+                    A<int>::~A(1) # Second wrapper dies.
+                    A<int>::~A(2) # First wrapper dies.
+                    A<int>::~A(1) # The source object dies.
+                )");
+
+                auto x = RCORO((int *out = nullptr)
+                {
+                    RC_FOR((i, A(0)); int(i) < 5; i = int(i) + 1)
+                    {
+                        if (out)
+                            *out = int(i) * 10;
+                        RC_YIELD();
+                    }
+                });
+
+                x()();
+
+                *test_detail::a_log += "... wrap\n";
+                rcoro::any<int *> y = x;
+                ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+                *test_detail::a_log += "... copy wrapper\n";
+                rcoro::any<int *> z = y;
+                ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+                *test_detail::a_log += "... call wrapper\n";
+                int result = 0;
+                y(&result);
+                ASSERT(result == 20);
+                *test_detail::a_log += "... reassign wrapper\n";
+                y = z;
+                *test_detail::a_log += "... call wrapper\n";
+                result = 0;
+                y(&result);
+                ASSERT(result == 20);
+                *test_detail::a_log += "... done\n";
+            }
+
+            { // Null wrapper.
+                rcoro::any<> y;
+                rcoro::any<> z = y; // Copying must be a no-op.
+                ASSERT(!y && !y.busy() && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
+                y.reset(); // No-op.
+                std::move(y).reset(); // No-op.
+                ASSERT(!y && !y.busy() && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
+                THROWS("null", y.rewind());
+                THROWS("null", std::move(y).rewind());
+                THROWS("null", y());
+                THROWS("null", std::move(y)());
+            }
+
+            { // SFINAE-reject non-copyable coroutines.
+                auto x = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a;);
+                static_assert(!std::is_constructible_v<any<>, decltype(x)>);
+                static_assert(std::is_constructible_v<any_noncopyable<>, decltype(x)>);
             }
         }
     }

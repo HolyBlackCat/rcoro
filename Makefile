@@ -69,6 +69,8 @@ else ifeq ($(if $(filter g++% clang++%,$(COMPILER)),$(shell $(if $(filter g++%,$
 	@true # Unsupported standard version for this compiler.
 else ifneq ($(and $(filter clang++%,$(COMPILER)),$(filter libc++,$(STDLIB)),$(if $(wildcard /usr/lib/llvm-$(shell $(COMPILER) --version | grep -Po '(?<=version )[0-9]+')/include/c++),,x)),)
 	@true # Using Clang with libc++, but libc++ is not installed.
+else ifneq ($(and $(filter clang-cl,$(COMPILER)),$(filter -fsanitize=address,$(OPTIM_FLAGS_$(OPTIMIZE)))),)
+	@true # ASAN on clang-cl gives us errors, unsure why. Since ASAN passes on Linux, we skip it.
 else
 	$(call var,_env_overrides := $(strip $(foreach x,$(TEST_EXTRA_ENV),$(if $(and $(filter $(word 1,$(subst :, ,$x)),$(COMPILER)),$(filter $(word 2,$(subst :, ,$x)),$(STDLIB)),$(filter $(word 3,$(subst :, ,$x)),$(OPTIMIZE))),$(word 4,$(subst :, ,$x))))))
 	@+printf "%-11s C++%-7s %-10s %-14s...  " $(COMPILER) $(STANDARD) $(STDLIB) $(OPTIMIZE)

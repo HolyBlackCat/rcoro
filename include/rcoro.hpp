@@ -1677,6 +1677,10 @@ namespace rcoro
         template <typename ...P>
         struct basic_any_noncopyable_vtable : basic_interface_vtable<P...>
         {
+            // Can't seem to put this directly into the `basic_any_noncopyable`.
+            template <typename T>
+            static constexpr bool constructor_param_allowed = true;
+
             void (*destroy_at)(void *) noexcept = nullptr;
 
             template <typename T>
@@ -1709,7 +1713,10 @@ namespace rcoro
             constexpr basic_any_noncopyable(std::nullptr_t) {}
 
             template <typename T>
-            requires specific_coro_type<std::remove_cvref_t<T>> && std::remove_cvref_t<T>::template callable_with_args<P...>
+            requires
+                specific_coro_type<std::remove_cvref_t<T>>
+                && Vtable::template constructor_param_allowed<T>
+                && std::remove_cvref_t<T>::template callable_with_args<P...>
             constexpr basic_any_noncopyable(T &&coro)
             {
                 using type = std::remove_cvref_t<T>;
@@ -1762,6 +1769,10 @@ namespace rcoro
         template <typename ...P>
         struct basic_any_vtable : basic_any_noncopyable_vtable<P...>
         {
+            // `basic_any_noncopyable` uses this.
+            template <typename T>
+            static constexpr bool constructor_param_allowed = std::is_copy_constructible_v<std::remove_cvref_t<T>>;
+
             void *(*copy_construct)(const void *) = nullptr;
 
             template <typename T>

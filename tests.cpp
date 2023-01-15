@@ -85,6 +85,8 @@ namespace test_detail
         std::string ret(rcoro::detail::type_name<T>());
         ret = string_replace(ret, "short int", "short"); // GCC spells it as `short int`, breaking my test cases.
         ret = string_replace(ret, "long int", "long"); // ^
+        ret = string_replace(ret, "class ", ""); // MSVC stuff.
+        ret = string_replace(ret, "struct ", ""); // ^
         return ret;
     }
 

@@ -1810,6 +1810,8 @@ namespace rcoro
 
             constexpr basic_any(const basic_any &other)
             {
+                if (!other.vptr)
+                    return;
                 this->memory = other.vptr->copy_construct(other.memory);
                 this->vptr = other.vptr;
             }

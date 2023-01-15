@@ -2396,6 +2396,15 @@ R"(yield_point = 3, `h`
                 THROWS("null", z());
                 THROWS("null", std::move(z)());
             }
+
+            { // SFINAE on the constructor.
+                // Reject construction from an unrelated type.
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, int>);
+
+                // Reject construction on parameter mismatch.
+                auto x = RCORO((int));
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, decltype(x)>);
+            }
         }
 
         { // `any`.
@@ -2459,7 +2468,8 @@ R"(yield_point = 3, `h`
 
             { // Null wrapper.
                 rcoro::any<> y;
-                rcoro::any<> z = y; // Copying must be a no-op.
+                rcoro::any<> z = y; // Copying null must be a no-op.
+                y = z; // This is also a no-op.
                 ASSERT(!y && !y.busy() && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
                 y.reset(); // No-op.
                 std::move(y).reset(); // No-op.
@@ -2470,10 +2480,18 @@ R"(yield_point = 3, `h`
                 THROWS("null", std::move(y)());
             }
 
-            { // SFINAE-reject non-copyable coroutines.
-                auto x = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a;);
-                static_assert(!std::is_constructible_v<any<>, decltype(x)>);
-                static_assert(std::is_constructible_v<any_noncopyable<>, decltype(x)>);
+            { // SFINAE on the constructor.
+                // Reject construction from an unrelated type.
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, int>);
+
+                // Reject construction on parameter mismatch.
+                auto x = RCORO((int));
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, decltype(x)>);
+
+                // Reject non-copyable coroutine.
+                auto y = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a;);
+                static_assert(!std::is_constructible_v<rcoro::any<>, decltype(y)>);
+                static_assert(std::is_constructible_v<rcoro::any_noncopyable<>, decltype(y)>);
             }
         }
     }

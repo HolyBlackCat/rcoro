@@ -88,7 +88,7 @@ else
 		-std$(if $(filter %cl,$(COMPILER)),:,=)c++$(STANDARD) \
 		$(if $(filter clang++%,$(COMPILER)),-stdlib=$(STDLIB)) \
 		$(patsubst $(COMPILER)=%,%,$(filter $(COMPILER)=%,$(CXXFLAGS_PER_COMPILER))) \
-		$(if $(filter %cl,$(COMPILER)),-link -out:,-o)tests \
+		$(if $(filter %cl,$(COMPILER)),-link $(filter /DEBUG,$(_optim_flags)) -out:,-o)tests \
 		&& $(_env_overrides) ./tests \
 	)
 endif

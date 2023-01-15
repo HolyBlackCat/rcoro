@@ -232,6 +232,10 @@ enum class ops
 template <typename T, ops O>
 struct B_base : A<T>
 {
+    #ifdef _MSC_VER
+    #pragma warning(push)
+    #pragma warning(disable: 4297) // function assumed not to throw an exception but does
+    #endif
     using A<T>::A;
     constexpr B_base(const B_base &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor))
         : A<T>((O & ops::copy_ctor_throws) == ops::copy_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : other) {}
@@ -239,6 +243,9 @@ struct B_base : A<T>
         : A<T>((O & ops::move_ctor_throws) == ops::move_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : std::move(other)) {}
     constexpr B_base &operator=(const B_base &other) noexcept((O & ops::nothrow_copy_assign) == ops::nothrow_copy_assign) requires(bool(O & ops::copy_assign)) {static_cast<A<T> &>(*this) = other; return *this;}
     constexpr B_base &operator=(B_base &&other) noexcept((O & ops::nothrow_move_assign) == ops::nothrow_move_assign) requires(bool(O & ops::move_assign)) {static_cast<A<T> &>(*this) = std::move(other); return *this;}
+    #ifdef _MSC_VER
+    #pragma warning(pop)
+    #endif
 };
 template <typename T, ops O>
 struct B : B_base<T, O>
@@ -689,6 +696,7 @@ frame: size=)" << rcoro::frame_size<X> << R"( align=)" << rcoro::frame_alignment
                 log_ss << rcoro::debug_info<X>;
                 std::string log = log_ss.str();
                 log = test_detail::string_replace(log, "short int", "short"); // GCC needs this, because it spells the type as `short int`.
+                log = test_detail::string_replace(log, "class A", "A"); // MSVC stuff.
 
                 if (log != expected_ss.str())
                 {

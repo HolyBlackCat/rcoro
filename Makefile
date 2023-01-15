@@ -81,7 +81,7 @@ else
 		$(call var,_optim_flags := $(OPTIM_FLAGS_$(OPTIMIZE)))\
 		$(if $(filter %cl,$(COMPILER)),\
     		$(call var,_optim_flags := $(filter-out -fsanitize=undefined -O0,$(_optim_flags)))\
-    		$(call var,_optim_flags := $(patsubst -g,/DEBUG,$(_optim_flags)))\
+    		$(call var,_optim_flags := $(patsubst -g,/DEBUG -Zi,$(_optim_flags)))\
     		$(call var,_optim_flags := $(patsubst -O3,-O2,$(_optim_flags)))\
 		)\
 		$(_optim_flags)\

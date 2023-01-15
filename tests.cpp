@@ -52,7 +52,8 @@ namespace test_detail
     }
 }
 
-#define THROWS(pattern, ...) ::test_detail::expect_throw(__FILE__, __LINE__, #__VA_ARGS__, pattern, [&]{(void)(__VA_ARGS__);})
+#define BLOCK_THROWS(pattern, ...) ::test_detail::expect_throw(__FILE__, __LINE__, #__VA_ARGS__, pattern, [&]{__VA_ARGS__})
+#define THROWS(pattern, ...) BLOCK_THROWS(pattern, (void)(__VA_ARGS__);)
 
 template <typename T>
 class A;
@@ -240,9 +241,9 @@ struct B_base : A<T>
     #endif
     using A<T>::A;
     constexpr B_base(const B_base &other) noexcept((O & ops::nothrow_copy_ctor) == ops::nothrow_copy_ctor) requires(bool(O & ops::copy_ctor))
-        : A<T>((O & ops::copy_ctor_throws) == ops::copy_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : other) {}
+        : A<T>((O & ops::copy_ctor_throws) == ops::copy_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), std::runtime_error("B!")) : other) {}
     constexpr B_base(B_base &&other) noexcept((O & ops::nothrow_move_ctor) == ops::nothrow_move_ctor) requires(bool(O & ops::move_ctor))
-        : A<T>((O & ops::move_ctor_throws) == ops::move_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), 42) : std::move(other)) {}
+        : A<T>((O & ops::move_ctor_throws) == ops::move_ctor_throws ? throw(void(*test_detail::a_log += "throw!\n"), std::runtime_error("B!")) : std::move(other)) {}
     constexpr B_base &operator=(const B_base &other) noexcept((O & ops::nothrow_copy_assign) == ops::nothrow_copy_assign) requires(bool(O & ops::copy_assign)) {static_cast<A<T> &>(*this) = other; return *this;}
     constexpr B_base &operator=(B_base &&other) noexcept((O & ops::nothrow_move_assign) == ops::nothrow_move_assign) requires(bool(O & ops::move_assign)) {static_cast<A<T> &>(*this) = std::move(other); return *this;}
     #ifdef _MSC_VER
@@ -362,7 +363,6 @@ class Expect
 
 int main()
 {
-    // * Test: copy throws when: 1. constructing wrapper, 2. copying wrapper
     // * Test any[_noncopyable]: move ops are nothrow, copy ops are not
 
     // * Possible improvements:
@@ -1109,6 +1109,7 @@ R"(yield_point = 3, `h`
               case kind::exception:
                 should_throw = true;
                 try {source();} catch (int) {}
+                break;
               case kind::_count:
                 break;
             }
@@ -1135,6 +1136,7 @@ R"(yield_point = 3, `h`
                       case kind::exception:
                         should_throw = true;
                         try {target();} catch (int) {}
+                        break;
                       case kind::_count:
                         break;
                     }
@@ -1358,9 +1360,8 @@ R"(yield_point = 3, `h`
                         else
                             target = source;
                     }
-                    catch (int) {}
+                    catch (...) {}
 
-                    // ASSERT(target.finished() && target.finish_reason() == rcoro::finish_reason::reset && target.yield_point() == 0);
                     *test_detail::a_log += "... destroy target\n";
                 }
                 else
@@ -1373,10 +1374,8 @@ R"(yield_point = 3, `h`
                         else
                             auto target = source;
                     }
-                    catch (int) {}
+                    catch (...) {}
                 }
-
-                // ASSERT(source.finished() && source.finish_reason() == rcoro::finish_reason::reset && source.yield_point() == 0);
 
                 *test_detail::a_log += "... destroy source\n";
             }
@@ -2405,6 +2404,39 @@ R"(yield_point = 3, `h`
                 auto x = RCORO((int));
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, decltype(x)>);
             }
+
+            { // Exception recovery.
+                { // Emplacing the coroutine throws.
+                    Expect ex(R"(
+                        A<int>::A(42)
+                        A<int>::A(43)
+                        ... wrap
+                        A<int>::A(A && = 42)
+                        throw!
+                        A<int>::~A(42) # New variables are destroyed.
+                        A<int>::~A(43) # Source dies.
+                        A<int>::~A(-42) # ^
+                        ... done
+                    )");
+
+                    auto x = RCORO({
+                        RC_VAR(a, A(42));
+                        (void)a;
+                        RC_VAR(b, B<int, ops::move_ctor_throws>(43));
+                        (void)b;
+                        RC_YIELD();
+                    });
+                    x();
+
+                    *test_detail::a_log += "... wrap\n";
+
+                    BLOCK_THROWS("B!",
+                        rcoro::any_noncopyable<> y = std::move(x);
+                    );
+
+                    *test_detail::a_log += "... done\n";
+                }
+            }
         }
 
         { // `any`.
@@ -2492,6 +2524,77 @@ R"(yield_point = 3, `h`
                 auto y = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a;);
                 static_assert(!std::is_constructible_v<rcoro::any<>, decltype(y)>);
                 static_assert(std::is_constructible_v<rcoro::any_noncopyable<>, decltype(y)>);
+            }
+
+            { // Exception recovery.
+                { // Emplacing the coroutine throws.
+                    Expect ex(R"(
+                        A<int>::A(42)
+                        A<int>::A(43)
+                        ... wrap
+                        A<int>::A(const A & = 42)
+                        throw!
+                        A<int>::~A(42) # New variables are destroyed.
+                        ... done
+                        A<int>::~A(43) # Source dies.
+                        A<int>::~A(42) # ^
+                    )");
+
+                    auto x = RCORO({
+                        RC_VAR(a, A(42));
+                        (void)a;
+                        RC_VAR(b, B<int, ops::copy_ctor_throws>(43));
+                        (void)b;
+                        RC_YIELD();
+                    });
+                    x();
+
+                    *test_detail::a_log += "... wrap\n";
+
+                    BLOCK_THROWS("B!",
+                        rcoro::any<> y = x;
+                    );
+
+                    *test_detail::a_log += "... done\n";
+                }
+
+                { // Copying the wrapper throws.
+                    Expect ex(R"(
+                        A<int>::A(42)
+                        A<int>::A(43)
+                        ... wrap
+                        A<int>::A(A && = 42)
+                        A<int>::A(A && = 43)
+                        A<int>::~A(-43)
+                        A<int>::~A(-42)
+                        ... copy
+                        A<int>::A(const A & = 42)
+                        throw!
+                        A<int>::~A(42) # New variables are destroyed.
+                        ... done
+                        A<int>::~A(43) # Source wrapper dies.
+                        A<int>::~A(42) # ^
+                    )");
+
+                    auto x = RCORO({
+                        RC_VAR(a, A(42));
+                        (void)a;
+                        RC_VAR(b, B<int, ops::move_ctor | ops::copy_ctor_throws>(43));
+                        (void)b;
+                        RC_YIELD();
+                    });
+                    x();
+
+                    *test_detail::a_log += "... wrap\n";
+                    rcoro::any<> y = std::move(x);
+
+                    *test_detail::a_log += "... copy\n";
+                    BLOCK_THROWS("B!",
+                        rcoro::any<> z = y;
+                    );
+
+                    *test_detail::a_log += "... done\n";
+                }
             }
         }
     }

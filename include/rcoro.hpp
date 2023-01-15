@@ -1715,6 +1715,7 @@ namespace rcoro
             template <typename T>
             requires
                 specific_coro_type<std::remove_cvref_t<T>>
+                && std::is_constructible_v<std::remove_cvref_t<T>, T &&> // Can copy/move into the wrapper.
                 && Vtable::template constructor_param_allowed<T>
                 && std::remove_cvref_t<T>::template callable_with_args<P...>
             constexpr basic_any_noncopyable(T &&coro)
@@ -1766,6 +1767,20 @@ namespace rcoro
         };
 
 
+        namespace type_erasure_detail
+        {
+            struct MemoryGuard
+            {
+                void *ret = nullptr;
+                bool fail = true;
+                ~MemoryGuard()
+                {
+                    if (fail)
+                        operator delete(ret);
+                }
+            };
+        }
+
         template <typename ...P>
         struct basic_any_vtable : basic_any_noncopyable_vtable<P...>
         {
@@ -1781,17 +1796,7 @@ namespace rcoro
                 basic_any_noncopyable_vtable<P...>::template fill<T>();
                 copy_construct = [](const void *c)
                 {
-                    struct Guard
-                    {
-                        void *ret = nullptr;
-                        bool fail = true;
-                        ~Guard()
-                        {
-                            if (fail)
-                                operator delete(ret);
-                        }
-                    };
-                    Guard guard;
+                    type_erasure_detail::MemoryGuard guard;
                     guard.ret = operator new(sizeof(T));
                     std::construct_at(static_cast<T *>(guard.ret), *static_cast<const T *>(c));
                     guard.fail = false;
@@ -1808,7 +1813,7 @@ namespace rcoro
           public:
             using base::base;
 
-            constexpr basic_any(const basic_any &other)
+            constexpr basic_any(const basic_any &other) : base()
             {
                 if (!other.vptr)
                     return;

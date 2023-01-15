@@ -1,0 +1,42 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  Tests:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Install packages
+      run: |
+        # Install latest GCC.
+        sudo apt install -y g++-12
+        # Install latest Clang.
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 15
+    - name: Clone deps
+      run: git clone https://github.com/HolyBlackCat/macro_sequence_for ../macro_sequence_for
+    - name: List compilers
+      run: make -pq | grep ^COMPILER
+    - name: Run tests
+      run: make COMPILER='clang++-15 clang++-14 clang++-13 g++-12 g++-11 g++-10' CXXFLAGS_PER_COMPILER='clang++-13=-Wno-gnu-zero-variadic-macro-arguments'
+  Tests-MSVC:
+    runs-on: windows-latest
+    steps:
+    - name: Locate MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        update: true
+        install: make
+        path-type: inherit
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Clone deps
+      run: git clone https://github.com/HolyBlackCat/macro_sequence_for ../macro_sequence_for
+    - name: Run tests
+      run: make COMPILER='cl clang-cl'
+      shell: msys2 {0}

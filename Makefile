@@ -39,7 +39,7 @@ TEST_EXTRA_ENV += clang++-%:libc++:O0_sanitized:ASAN_OPTIONS=alloc_dealloc_misma
 
 # Important compiler flags.
 CXXFLAGS_DEFAULT := -Iinclude -I../macro_sequence_for/include -g -pedantic-errors -Wall -Wextra -Wdeprecated -Wextra-semi -ftemplate-backtrace-limit=0
-CXXFLAGS_DEFAULT_MSVC := -Iinclude -I../macro_sequence_for/include -EHsc
+CXXFLAGS_DEFAULT_MSVC := -Iinclude -I../macro_sequence_for/include -EHsc -Zc:preprocessor
 # Less important compiler flags.
 CXXFLAGS :=
 

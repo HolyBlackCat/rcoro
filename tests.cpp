@@ -353,6 +353,7 @@ class Expect
 
 int main()
 {
+    // * Any's copy ctor should SFINAE reject non-copyable coros.
     // * Test `any[_noncopyable]` rule of five.
     // * Test `any` like `any_noncopyable`
     // * Test: copy throws when: 1. constructing wrapper, 2. copying wrapper

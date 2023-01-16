@@ -363,8 +363,6 @@ class Expect
 
 int main()
 {
-    // * Test any[_noncopyable]: move ops are nothrow, copy ops are not
-
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
@@ -2332,6 +2330,10 @@ R"(yield_point = 3, `h`
         }
 
         { // `any_noncopyable`.
+            static_assert(!std::is_copy_constructible_v<rcoro::any_noncopyable<>> && !std::is_copy_assignable_v<rcoro::any_noncopyable<>>);
+            static_assert(std::is_move_constructible_v<rcoro::any_noncopyable<>> && std::is_move_assignable_v<rcoro::any_noncopyable<>>);
+            static_assert(std::is_nothrow_move_constructible_v<rcoro::any_noncopyable<>> && std::is_nothrow_move_assignable_v<rcoro::any_noncopyable<>>);
+
             { // Basic test.
                 Expect ex(R"(
                     A<int>::A(0)                # i=0
@@ -2396,6 +2398,49 @@ R"(yield_point = 3, `h`
                 THROWS("null", std::move(z)());
             }
 
+            { // Rule of five.
+                Expect ex(R"(
+                    A<int>::A(10)
+                    ... wrap
+                    A<int>::A(const A & = 10)
+                    ... move ctor
+                    # Only a heap pointer is moved.
+                    ... prepare
+                    A<int>::A(const A & = 10) # Reassign moved-from `y`.
+                    A<int>::~A(10)            # Change value in `y`.
+                    A<int>::A(20)             # ^
+                    A<int>::~A(10)            # Change value in `z`.
+                    A<int>::A(30)             # ^
+                    ... move assign
+                    A<int>::~A(20)            # Old value dies, then the heap pointer is moved, which isn't logged.
+                    ... done
+                    A<int>::~A(30)            # `z` dies.
+                    A<int>::~A(10)            # Original coroutine dies.
+                )");
+
+                auto x = RCORO((int init)
+                {
+                    while (true)
+                    {
+                        RC_VAR(a, A(init)); (void)a;
+                        RC_YIELD();
+                    }
+                });
+
+                x(10);
+                *test_detail::a_log += "... wrap\n";
+                rcoro::any_noncopyable<int> y = x;
+                *test_detail::a_log += "... move ctor\n";
+                rcoro::any_noncopyable<int> z = std::move(y);
+                *test_detail::a_log += "... prepare\n";
+                y = x;
+                y(20);
+                z(30);
+                *test_detail::a_log += "... move assign\n";
+                y = std::move(z);
+                *test_detail::a_log += "... done\n";
+            }
+
             { // SFINAE on the constructor.
                 // Reject construction from an unrelated type.
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, int>);
@@ -2440,6 +2485,11 @@ R"(yield_point = 3, `h`
         }
 
         { // `any`.
+            static_assert(std::is_copy_constructible_v<rcoro::any<>> && std::is_copy_assignable_v<rcoro::any<>>);
+            static_assert(!std::is_nothrow_copy_constructible_v<rcoro::any<>> && !std::is_nothrow_copy_assignable_v<rcoro::any<>>);
+            static_assert(std::is_move_constructible_v<rcoro::any<>> && std::is_move_assignable_v<rcoro::any<>>);
+            static_assert(std::is_nothrow_move_constructible_v<rcoro::any<>> && std::is_nothrow_move_assignable_v<rcoro::any<>>);
+
             { // Basic test.
                 Expect ex(R"(
                     A<int>::A(0)                # i=0
@@ -2510,6 +2560,67 @@ R"(yield_point = 3, `h`
                 THROWS("null", std::move(y).rewind());
                 THROWS("null", y());
                 THROWS("null", std::move(y)());
+            }
+
+            { // Rule of five.
+                Expect ex(R"(
+                    A<int>::A(10)
+                    ... wrap
+                    A<int>::A(const A & = 10)
+                    ... move ctor
+                    # Only a heap pointer is moved.
+                    ... prepare
+                    A<int>::A(const A & = 10) # Reassign moved-from `y`.
+                    A<int>::~A(10)            # Change value in `y`.
+                    A<int>::A(20)             # ^
+                    A<int>::~A(10)            # Change value in `z`.
+                    A<int>::A(30)             # ^
+                    ... move assign
+                    A<int>::~A(20)            # Old value dies, then the heap pointer is moved, which isn't logged.
+                    ... prepare
+                    A<int>::A(const A & = 10) # Reassign moved-from `z`.
+                    A<int>::~A(10)            # Change value in `z`.
+                    A<int>::A(40)             # ^
+                    ... copy assign
+                    A<int>::A(const A & = 40) # Copy into a temporary.
+                    A<int>::~A(30)            # The old value dies.
+                    ... copy ctor
+                    A<int>::A(const A & = 40)
+                    ... done
+                    A<int>::~A(40) # `w` dies.
+                    A<int>::~A(40) # `z` dies.
+                    A<int>::~A(40) # `y` dies.
+                    A<int>::~A(10) # THe source coroutine dies.
+                )");
+
+                auto x = RCORO((int init)
+                {
+                    while (true)
+                    {
+                        RC_VAR(a, A(init)); (void)a;
+                        RC_YIELD();
+                    }
+                });
+
+                x(10);
+                *test_detail::a_log += "... wrap\n";
+                rcoro::any<int> y = x;
+                *test_detail::a_log += "... move ctor\n";
+                rcoro::any<int> z = std::move(y);
+                *test_detail::a_log += "... prepare\n";
+                y = x;
+                y(20);
+                z(30);
+                *test_detail::a_log += "... move assign\n";
+                y = std::move(z);
+                *test_detail::a_log += "... prepare\n";
+                z = x;
+                z(40);
+                *test_detail::a_log += "... copy assign\n";
+                y = z;
+                *test_detail::a_log += "... copy ctor\n";
+                rcoro::any<int> w(y);
+                *test_detail::a_log += "... done\n";
             }
 
             { // SFINAE on the constructor.

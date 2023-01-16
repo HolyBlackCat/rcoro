@@ -1842,6 +1842,12 @@ namespace rcoro
     {
       public:
         using type_erasure_bits::basic_any_noncopyable<any_noncopyable<P...>, type_erasure_bits::basic_any_noncopyable_vtable<P...>, P...>::basic_any_noncopyable;
+
+        // Unsure why this is needed, but without this, we get `copy_assignable == true`, then a hard compilation error when trying to copy.
+        any_noncopyable(const any_noncopyable &) = delete;
+        any_noncopyable(any_noncopyable &&) = default;
+        any_noncopyable &operator=(const any_noncopyable &) = delete;
+        any_noncopyable &operator=(any_noncopyable &&) = default;
     };
 
     template <typename ...P>
@@ -1849,6 +1855,12 @@ namespace rcoro
     {
       public:
         using type_erasure_bits::basic_any<any<P...>, type_erasure_bits::basic_any_vtable<P...>, P...>::basic_any;
+
+        any(const any &) = default;
+        any(any &&) = default;
+        // Unsure why this is needed, but without this, we get `nothrow_copy_assignable == true`, which is wrong.
+        any &operator=(const any &) noexcept(false) = default;
+        any &operator=(any &&) = default;
     };
 }
 

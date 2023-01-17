@@ -254,7 +254,7 @@ namespace rcoro
         constexpr void with_const_index_helper(F &&func) {std::forward<F>(func)(std::integral_constant<decltype(I), I>{});}
 
         // Transforms a runtime index to a compile-time one. UB if out of bounds.
-        // `func` is `?? func(int i)`. It's called with the current yield point index, if any.
+        // `func` is `void func(int i)`. It's called with the current yield point index, if any.
         template <auto N, typename F>
         constexpr void with_const_index(decltype(N) i, F &&func)
         {
@@ -283,11 +283,84 @@ namespace rcoro
         struct TypeAt<0, TypeList<P0, P...>> {using type = P0;};
 
         // Returns the number of variables in a coroutine.
+        // Here and everywhere, `Raw` means that the variable index includes unused variables.
         template <typename T>
-        struct NumVars : std::integral_constant<int, T::_rcoro_vars::size> {};
-        // Returns the name of a single variable. `::value` is a `const_strict`.
+        struct NumVarsWithUnused : std::integral_constant<int, T::_rcoro_vars::size> {};
+
+        // Stateful trick to store which variables are actually used.
         template <typename T, int N>
-        using VarName = typename TypeAt<N, typename T::_rcoro_vars>::type;
+        struct RawVarUsedReader
+        {
+            RCORO_TEMPLATE_FRIEND(
+            friend constexpr bool _adl_detail_rcoro_var_used(RawVarUsedReader<T, N>);
+            )
+        };
+        template <typename T, int N>
+        struct RawVarUsedWriter
+        {
+            friend constexpr bool _adl_detail_rcoro_var_used(RawVarUsedReader<T, N>) {return true;}
+        };
+        constexpr void _adl_detail_rcoro_var_used() {} // Dummy ADL target.
+        template <typename T, int N, typename = void>
+        struct RawVarUsed : std::false_type {};
+        template <typename T, int N>
+        struct RawVarUsed<T, N, std::enable_if_t<_adl_detail_rcoro_var_used(RawVarUsedReader<T, N>{})>> : std::true_type {};
+        // Mark multiple variables as used.
+        template <typename T, int I, bool ...B>
+        struct RawVarUsedMultiWriter {};
+        template <typename T, int I, bool ...B>
+        struct RawVarUsedMultiWriter<T, I, true, B...> : RawVarUsedWriter<T, I>, RawVarUsedMultiWriter<T, I+1, B...> {};
+        template <typename T, int I, bool ...B>
+        struct RawVarUsedMultiWriter<T, I, false, B...> : RawVarUsedMultiWriter<T, I+1, B...> {};
+        // Count used variables.
+        template <typename T>
+        struct NumVarsDense : std::integral_constant<int, []<int ...I>(std::integer_sequence<int, I...>){
+            return (RawVarUsed<T, I>::value + ... + 0);
+        }(std::make_integer_sequence<int, NumVarsWithUnused<T>::value>{})> {};
+        // Sparse to dense variable indices. Dense indices ignore unused variables.
+        template <typename T>
+        constexpr int pack_var_index(int value)
+        {
+            RCORO_ASSERT(value >= 0 && value < NumVarsWithUnused<T>::value);
+            if constexpr (NumVarsWithUnused<T>::value == 0)
+            {
+                return 0;
+            }
+            else
+            {
+                constexpr auto mapping = []<int ...I>(std::integer_sequence<int, I...>){
+                    int i = 0;
+                    return std::array{(RawVarUsed<T, I>::value ? i++ : -1)...};
+                }(std::make_integer_sequence<int, NumVarsWithUnused<T>::value>{});
+                int ret = mapping[value];
+                RCORO_ASSERT(ret >= 0 && "Internal error: this variable is unused, it doesn't have a packed index.");
+                return ret;
+            }
+        }
+        // Dense to sparse variable indices.
+        template <typename T>
+        constexpr int unpack_var_index(int value)
+        {
+            RCORO_ASSERT(value >= 0 && value < NumVarsDense<T>::value);
+            if constexpr (NumVarsDense<T>::value == 0)
+            {
+                return 0;
+            }
+            else
+            {
+                constexpr auto mapping = []<int ...I>(std::integer_sequence<int, I...>){
+                    std::array<int, NumVarsDense<T>::value> ret{};
+                    int i = 0;
+                    ((RawVarUsed<T, I>::value ? void(ret[i++] = I) : void()), ...);
+                    return ret;
+                }(std::make_integer_sequence<int, NumVarsWithUnused<T>::value>{});
+                return mapping[value];
+            }
+        }
+
+        // Returns the name of a single variable. `::value` is a `const_string`.
+        template <typename T, int N>
+        using VarName = typename TypeAt<unpack_var_index<T>(N), typename T::_rcoro_vars>::type;
 
         // Returns the number of yield points in a coroutine.
         template <typename T>
@@ -301,129 +374,137 @@ namespace rcoro
         // because the two types will be different if the type is defined locally (a lambda, a coroutine, or just a locally-defined class/enum),
         // and we need both (fake for computing the variable offsets, and non-fake for everything else).
         template <bool Fake, typename T, int N>
-        struct VarTypeReader
+        struct RawVarTypeReader
         {
             RCORO_TEMPLATE_FRIEND(
-            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>);
+            friend constexpr auto _adl_detail_rcoro_var_type(RawVarTypeReader<Fake, T, N>);
             )
         };
         constexpr void _adl_detail_rcoro_var_type() {} // Dummy ADL target.
         template <bool Fake, typename T, int N>
-        using MaybeTentativeVarType = std::remove_pointer_t<decltype(_adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>{}))>;
+        using MaybeTentativeRawVarType = std::remove_pointer_t<decltype(_adl_detail_rcoro_var_type(RawVarTypeReader<Fake, T, N>{}))>;
         template <typename T, int N>
-        using VarType = MaybeTentativeVarType<false, T, N>;
+        using RawVarType = MaybeTentativeRawVarType<false, T, N>;
         template <typename T, int N>
-        using TentativeVarType = MaybeTentativeVarType<true, T, N>;
+        using VarType = RawVarType<T, unpack_var_index<T>(N)>;
+        template <typename T, int N>
+        using TentativeRawVarType = MaybeTentativeRawVarType<true, T, N>;
+        template <typename T, int N>
+        using TentativeVarType = TentativeRawVarType<T, unpack_var_index<T>(N)>;
         template <bool Fake, typename T, int N, typename U>
-        struct VarTypeWriter
+        struct RawVarTypeWriter
         {
-            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<Fake, T, N>) {return (U *)nullptr;}
+            friend constexpr auto _adl_detail_rcoro_var_type(RawVarTypeReader<Fake, T, N>) {return (U *)nullptr;}
         };
         template <typename T, int N, typename U>
-        struct VarTypeWriter<false, T, N, U>
+        struct RawVarTypeWriter<false, T, N, U>
         {
             // Make sure the new type is sufficiently similar to the tentative one.
-            static_assert(sizeof(U) == sizeof(TentativeVarType<T, N>) && alignof(U) == alignof(TentativeVarType<T, N>) && std::is_empty_v<U> == std::is_empty_v<TentativeVarType<T, N>>,
+            static_assert(sizeof(U) == sizeof(TentativeRawVarType<T, N>) && alignof(U) == alignof(TentativeRawVarType<T, N>) && std::is_empty_v<U> == std::is_empty_v<TentativeRawVarType<T, N>>,
                 "You're doing something really stupid with the variable type.");
-            friend constexpr auto _adl_detail_rcoro_var_type(VarTypeReader<false, T, N>) {return (U *)nullptr;}
+            friend constexpr auto _adl_detail_rcoro_var_type(RawVarTypeReader<false, T, N>) {return (U *)nullptr;}
         };
         template <bool Fake, typename T, int N>
-        struct VarTypeHelper
+        struct RawVarTypeHelper
         {
-            template <typename U, typename = decltype(void(VarTypeWriter<Fake, T, N, std::decay_t<U>>{}))>
-            constexpr VarTypeHelper(U *) {}
+            template <typename U, typename = decltype(void(RawVarTypeWriter<Fake, T, N, std::decay_t<U>>{}))>
+            constexpr RawVarTypeHelper(U *) {}
         };
 
         // Stateful trick to store var-to-var overlap data.
         template <typename T, int N>
-        struct VarVarReachReader
+        struct RawVarVarReachReader
         {
             RCORO_TEMPLATE_FRIEND(
-            friend constexpr auto _adl_detail_rcoro_var_var_reach(VarVarReachReader<T, N>);
+            friend constexpr auto _adl_detail_rcoro_var_var_reach(RawVarVarReachReader<T, N>);
             )
         };
         template <bool Write, typename T, int N, auto M>
-        struct VarVarReachWriter
+        struct RawVarVarReachWriter
         {
-            friend constexpr auto _adl_detail_rcoro_var_var_reach(VarVarReachReader<T, N>) {return M;}
+            friend constexpr auto _adl_detail_rcoro_var_var_reach(RawVarVarReachReader<T, N>) {return M;}
         };
         template <typename T, int N, auto M>
-        struct VarVarReachWriter<false, T, N, M> {};
+        struct RawVarVarReachWriter<false, T, N, M> {};
         constexpr void _adl_detail_rcoro_var_var_reach() {} // Dummy ADL target.
         template <typename T, int A, int B>
-        struct VarVarReach : std::bool_constant<_adl_detail_rcoro_var_var_reach(VarVarReachReader<T, A>{})[B]> {};
+        struct RawVarVarReach : std::bool_constant<_adl_detail_rcoro_var_var_reach(RawVarVarReachReader<T, A>{})[B]> {};
         template <typename T, int A>
-        struct VarVarReach<T, A, A> : std::true_type {};
+        struct RawVarVarReach<T, A, A> : std::true_type {};
         template <typename T, int A, int B> requires(A < B)
-        struct VarVarReach<T, A, B> : VarVarReach<T, B, A> {};
+        struct RawVarVarReach<T, A, B> : RawVarVarReach<T, B, A> {};
 
         // Stateful trick to store var-to-yield overlap data.
         template <typename T, int N>
-        struct VarYieldReachReader
+        struct RawVarYieldReachReader
         {
             RCORO_TEMPLATE_FRIEND(
-            friend constexpr auto _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, N>);
+            friend constexpr auto _adl_detail_rcoro_var_yield_reach(RawVarYieldReachReader<T, N>);
             )
         };
-        template <bool Write, typename T, int N, auto M>
-        struct VarYieldReachWriter
+        template <bool Write, typename T, int N, bool ...I>
+        struct RawVarYieldReachWriter : RawVarUsedMultiWriter<T, 0, I...> // We also flag used variables here.
         {
-            friend constexpr auto _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, N>) {return M;}
+            friend constexpr auto _adl_detail_rcoro_var_yield_reach(RawVarYieldReachReader<T, N>) {return std::array<bool, sizeof...(I)>{I...};}
         };
-        template <typename T, int N, auto M>
-        struct VarYieldReachWriter<false, T, N, M> {};
+        template <typename T, int N, bool ...I>
+        struct RawVarYieldReachWriter<false, T, N, I...> {};
         constexpr void _adl_detail_rcoro_var_yield_reach() {} // Dummy ADL target.
         template <typename T, int V, int Y>
-        struct VarYieldReach : std::bool_constant<(
-            _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, Y>{}).size() > V
-            && _adl_detail_rcoro_var_yield_reach(VarYieldReachReader<T, Y>{})[V]
+        struct RawVarYieldReach : std::bool_constant<(
+            _adl_detail_rcoro_var_yield_reach(RawVarYieldReachReader<T, Y>{}).size() > V
+            && _adl_detail_rcoro_var_yield_reach(RawVarYieldReachReader<T, Y>{})[V]
         )> {};
         // A special case for the 0-th implicit yield point.
         template <typename T, int V>
-        struct VarYieldReach<T, V, 0> : std::false_type {};
+        struct RawVarYieldReach<T, V, 0> : std::false_type {};
         // An array of all variables reachable from a yield point.
         template <typename T, int Y>
         constexpr auto vars_reachable_from_yield()
         {
             return []<int ...V>(std::integer_sequence<int, V...>){
-                std::array<int, (VarYieldReach<T, V, Y>::value + ... + 0)> ret{};
+                std::array<int, (RawVarYieldReach<T, unpack_var_index<T>(V), Y>::value + ... + 0)> ret{};
                 int pos = 0;
-                ((VarYieldReach<T, V, Y>::value ? void(ret[pos++] = V) : void()), ...);
+                ((RawVarYieldReach<T, unpack_var_index<T>(V), Y>::value ? void(ret[pos++] = V) : void()), ...);
                 return ret;
-            }(std::make_integer_sequence<int, NumVars<T>::value>{});
+            }(std::make_integer_sequence<int, NumVarsDense<T>::value>{});
         }
 
         // Determines the variable offset in the frame, based on `TentativeVarType`.
+        // This uses raw unpacked variable indices.
         template <typename T, int N, int M = N>
-        struct VarOffset : VarOffset<T, N, M-1> {};
-        template <typename T, int N>
-        struct VarOffset<T, N, 0> : std::integral_constant<std::size_t, 0> {};
-        template <typename T, int N, int M> requires(M > 0 && VarVarReach<T, N, M-1>::value)
-        struct VarOffset<T, N, M> : std::integral_constant<std::size_t,
+        struct RawVarOffset {}; // This variable is unused, refuse to calculate offset.
+        template <typename T, int N> requires RawVarUsed<T, N>::value
+        struct RawVarOffset<T, N, 0> : std::integral_constant<std::size_t, 0> {}; // There are no overlapping variables, offset is 0.
+        template <typename T, int N, int M> requires(RawVarUsed<T, N>::value && M > 0 && !RawVarVarReach<T, N, M-1>::value)
+        struct RawVarOffset<T, N, M> : RawVarOffset<T, N, M-1> {}; // `M` doesn't overlap, check the previous variable.
+        // Here we don't need to check whether `M-1` is used, it's implied by it being reachable from the usable variable `N`.
+        template <typename T, int N, int M> requires(RawVarUsed<T, N>::value && M > 0 && RawVarVarReach<T, N, M-1>::value)
+        struct RawVarOffset<T, N, M> : std::integral_constant<std::size_t, // Found an overlapping variable, place this one after it.
             (
-                VarOffset<T, M-1>::value
-                + sizeof(TentativeVarType<T, M-1>)
+                RawVarOffset<T, M-1>::value
+                + sizeof(TentativeRawVarType<T, M-1>)
                 // Prepare to divide, rounding up.
-                + alignof(TentativeVarType<T, N>)
+                + alignof(TentativeRawVarType<T, N>)
                 - 1
             )
-            / alignof(TentativeVarType<T, N>)
-            * alignof(TentativeVarType<T, N>)>
+            / alignof(TentativeRawVarType<T, N>)
+            * alignof(TentativeRawVarType<T, N>)>
         {};
 
         // The stack frame alignment.
         template <typename T>
         struct FrameAlignment : std::integral_constant<std::size_t, []<int ...I>(std::integer_sequence<int, I...>){
             return std::max({alignof(char), alignof(TentativeVarType<T, I>)...});
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        }(std::make_integer_sequence<int, NumVarsDense<T>::value>{})> {};
         // The stack frame size.
         template <typename T>
         struct FrameSize : std::integral_constant<std::size_t, 0> {};
-        template <typename T> requires(NumVars<T>::value > 0)
+        template <typename T> requires(NumVarsDense<T>::value > 0)
         struct FrameSize<T> : std::integral_constant<std::size_t,
             (
-                VarOffset<T, NumVars<T>::value - 1>::value
-                + sizeof(TentativeVarType<T, NumVars<T>::value - 1>)
+                RawVarOffset<T, unpack_var_index<T>(NumVarsDense<T>::value - 1)>::value
+                + sizeof(TentativeRawVarType<T, unpack_var_index<T>(NumVarsDense<T>::value - 1)>)
                 // Prepare to divide, rounding up.
                 + FrameAlignment<T>::value
                 - 1
@@ -436,23 +517,23 @@ namespace rcoro
         template <typename T>
         struct FrameIsCopyConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_copy_constructible_v<TentativeVarType<T, I>> && ...);
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        }(std::make_integer_sequence<int, NumVarsDense<T>::value>{})> {};
         template <typename T>
         struct FrameIsMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_move_constructible_v<TentativeVarType<T, I>> && ...);
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        }(std::make_integer_sequence<int, NumVarsDense<T>::value>{})> {};
         template <typename T>
         struct FrameIsNothrowCopyConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_nothrow_copy_constructible_v<TentativeVarType<T, I>> && ...);
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        }(std::make_integer_sequence<int, NumVarsDense<T>::value>{})> {};
         template <typename T>
         struct FrameIsNothrowMoveConstructible : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_nothrow_move_constructible_v<TentativeVarType<T, I>> && ...);
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        }(std::make_integer_sequence<int, NumVarsDense<T>::value>{})> {};
         template <typename T>
         struct FrameIsTriviallyCopyable : std::bool_constant<[]<int ...I>(std::integer_sequence<int, I...>){
             return (std::is_trivially_copyable_v<TentativeVarType<T, I>> && ...);
-        }(std::make_integer_sequence<int, NumVars<T>::value>{})> {};
+        }(std::make_integer_sequence<int, NumVarsDense<T>::value>{})> {};
 
         // Stores coroutine variables and other state.
         // If `Fake`, becomes an empty structure.
@@ -486,6 +567,7 @@ namespace rcoro
         template <bool Fake, typename T>
         struct Frame : FrameBase<T>
         {
+            using marker_t = T;
             static constexpr bool fake = Fake;
 
             // The state enum.
@@ -495,44 +577,64 @@ namespace rcoro
 
             // Returns true if the variable `V` exists at the current yield point.
             template <int V>
-            constexpr bool var_exists() const
+            constexpr bool raw_var_exists() const
             {
                 bool ret = false;
                 if (pos != 0) // Not strictly necessary, hopefully an optimization.
                 {
                     with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
                     {
-                        ret = VarYieldReach<T, V, yieldindex.value>::value;
+                        ret = RawVarYieldReach<T, V, yieldindex.value>::value;
                     });
                 }
                 return ret;
             }
+            template <int V>
+            constexpr bool var_exists() const
+            {
+                return raw_var_exists<unpack_var_index<T>(V)>();
+            }
 
             // Get `V`th variable storage, as a void pointer. We need a separate version for `void *`,
             // because when this is called, the actual variable type isn't known yet.
-            template <int V> constexpr       void *var_storage_untyped()       {return this->storage() + VarOffset<T, V>::value;}
-            template <int V> constexpr const void *var_storage_untyped() const {return this->storage() + VarOffset<T, V>::value;}
+            // This uses raw unpacked variable indices.
+            // If the variable is unused, returns `fallback` instead.
+            template <int V>
+            constexpr void *raw_var_storage_for_init(void *fallback)
+            {
+                if constexpr (RawVarUsed<T, V>::value)
+                    return this->storage() + RawVarOffset<T, V>::value;
+                else
+                    return fallback;
+            }
             // Get `V`th variable storage. Not laundered, so don't dereference.
-            template <int V> constexpr       VarType<T, V> *var_storage()       {return reinterpret_cast<      VarType<T, V> *>(var_storage_untyped<V>());}
-            template <int V> constexpr const VarType<T, V> *var_storage() const {return reinterpret_cast<const VarType<T, V> *>(var_storage_untyped<V>());}
+            template <int V> constexpr       VarType<T, V> *var_storage()       {return reinterpret_cast<      VarType<T, V> *>(this->storage() + RawVarOffset<T, unpack_var_index<T>(V)>::value);}
+            template <int V> constexpr const VarType<T, V> *var_storage() const {return reinterpret_cast<const VarType<T, V> *>(this->storage() + RawVarOffset<T, unpack_var_index<T>(V)>::value);}
 
             // Get `V`th variable. UB if it doesn't exist.
             template <int V> constexpr       VarType<T, V> &var()       {return *std::launder(var_storage<V>());}
             template <int V> constexpr const VarType<T, V> &var() const {return *std::launder(var_storage<V>());}
 
             // Get `V`th variable. An invalid reference if it doesn't exist and if `assume_good` is false.
+            // If this variable is optimized out and `assume_good == true`, returns `fallback` instead. Otherwise returns an invalid reference.
             template <int V>
-            constexpr VarType<T, V> &var_or_bad_ref(bool assume_good)
+            constexpr RawVarType<T, V> &raw_var_or_bad_ref(bool assume_good, void *fallback)
             {
-                if (assume_good || var_exists<V>())
-                    return var<V>();
+                if constexpr (RawVarUsed<T, V>::value)
+                {
+                    constexpr int v_packed = pack_var_index<T>(V);
+                    if (assume_good || var_exists<v_packed>())
+                        return var<v_packed>();
+                    else
+                        return bad_ref<RawVarType<T, V>>();
+                }
                 else
-                    return bad_ref<VarType<T, V>>();
-            }
-            template <int V>
-            constexpr const VarType<T, V> &var_or_bad_ref() const
-            {
-                return const_cast<Frame *>(this)->var_or_bad_ref();
+                {
+                    if (assume_good)
+                        return *std::launder(reinterpret_cast<RawVarType<T, V> *>(fallback));
+                    else
+                        return bad_ref<RawVarType<T, V>>();
+                }
             }
 
             // Cleans the frame.
@@ -705,57 +807,80 @@ namespace rcoro
             int pos = 0;
 
             template <int V>
-            constexpr bool var_exists()
+            constexpr bool raw_var_exists()
             {
                 return false;
             }
             template <int V>
-            constexpr TentativeVarType<T, V> &var()
-            {
-                return bad_ref<TentativeVarType<T, V>>();
-            }
-            template <int V>
-            constexpr void *var_storage_untyped()
+            constexpr void *raw_var_storage_for_init(void *)
             {
                 return nullptr;
             }
             template <int V>
-            constexpr TentativeVarType<T, V> &var_or_bad_ref(bool assume_good)
+            constexpr TentativeRawVarType<T, V> &raw_var_or_bad_ref(bool, void *)
             {
-                (void)assume_good;
-                return bad_ref<TentativeVarType<T, V>>();
+                return bad_ref<TentativeRawVarType<T, V>>();
             }
         };
 
-        // Creates a variable in a frame in its constructor, and destroys it in the destructor.
-        template <typename Frame, int I>
-        struct VarGuard
+        // If the variable ends up not being stored in the frame, it's stored here.
+        template <bool Fake, typename T, int I>
+        struct RawVarFallbackStorage
         {
-            Frame *frame = nullptr;
+            // Using the tentative type, because this is used before the final type is determined.
+            // This shouldn't matter, since we `static_assert` size and alignment match elsewhere.
+            using type = TentativeRawVarType<T, I>;
+            alignas(type) char storage[sizeof(type)]; // Not zeroing this, must be trivial initializable for `goto` to agree to jump over us.
+            void *ptr() {return storage;}
+        };
+        template <bool Fake, typename T, int I> requires(Fake || RawVarUsed<T, I>::value)
+        struct RawVarFallbackStorage<Fake, T, I>
+        {
+            void *ptr() {return nullptr;}
+        };
 
-            constexpr VarGuard(Frame *frame) : frame(frame) {}
-            VarGuard(const VarGuard &) = delete;
-            VarGuard &operator=(const VarGuard &) = delete;
-            constexpr ~VarGuard()
+        // Destroys a variable when dies.
+        template <typename Frame, int I>
+        struct RawVarGuard
+        {
+            using type = RawVarType<typename Frame::marker_t, I>;
+
+            Frame *frame = nullptr;
+            type *target = nullptr;
+
+            constexpr RawVarGuard(Frame *frame, void *fallback) : frame(frame)
             {
-                if (frame && frame->state != State::pausing)
-                    std::destroy_at(&frame->template var<I>());
+                if (!frame)
+                    return;
+                if constexpr (RawVarUsed<typename Frame::marker_t, I>::value)
+                    target = &frame->template var<pack_var_index<typename Frame::marker_t>(I)>();
+                else
+                    target = std::launder(reinterpret_cast<type *>(fallback));
+            }
+
+            RawVarGuard(const RawVarGuard &) = delete;
+            RawVarGuard &operator=(const RawVarGuard &) = delete;
+
+            constexpr ~RawVarGuard()
+            {
+                if (target && frame->state != State::pausing)
+                    std::destroy_at(target);
             }
         };
         // We need a separate fake version, because `var<I>()` isn't ready yet, because the actual variable type isn't determined yet.
         template <typename Frame, int I> requires Frame::fake
-        struct VarGuard<Frame, I>
+        struct RawVarGuard<Frame, I>
         {
-            constexpr VarGuard(Frame *) {}
-            VarGuard(const VarGuard &) = delete;
-            VarGuard &operator=(const VarGuard &) = delete;
+            constexpr RawVarGuard(Frame *, void *) {}
+            RawVarGuard(const RawVarGuard &) = delete;
+            RawVarGuard &operator=(const RawVarGuard &) = delete;
         };
 
         // An array of pairs, mapping variable names to their indices.
         template <typename T>
         constexpr auto var_name_to_index_mapping = []{
-            std::array<std::pair<std::string_view, int>, NumVars<T>::value> ret{};
-            const_for<NumVars<T>::value>([&](auto index)
+            std::array<std::pair<std::string_view, int>, NumVarsDense<T>::value> ret{};
+            const_for<NumVarsDense<T>::value>([&](auto index)
             {
                 constexpr int i = index.value;
                 ret[i].first = VarName<T, i>::value.view();
@@ -843,7 +968,7 @@ namespace rcoro
 
     // The number of variables in a coroutine.
     template <specific_coro_type T>
-    constexpr int num_vars = detail::NumVars<detail::GetMarker<T>>::value;
+    constexpr int num_vars = detail::NumVarsDense<detail::GetMarker<T>>::value;
 
     // The name of a coroutine variable `V`.
     template <specific_coro_type T, int V> requires(V >= 0 && V < num_vars<T>)
@@ -966,7 +1091,11 @@ namespace rcoro
 
     // Whether variable `V` exists at yield point `Y`.
     template <specific_coro_type T, int V, int Y>
-    constexpr bool var_lifetime_overlaps_yield_const = detail::VarYieldReach<detail::GetMarker<T>, V, Y>::value;
+    constexpr bool var_lifetime_overlaps_yield_const = detail::RawVarYieldReach<
+        detail::GetMarker<T>,
+        detail::unpack_var_index<detail::GetMarker<T>>(V),
+        Y
+    >::value;
 
     // Same as `var_lifetime_overlaps_yield_const`, but for non-const indices. Throws if anything is out of range.
     template <specific_coro_type T>
@@ -1068,11 +1197,15 @@ namespace rcoro
     // The offset of variable `V` in the stack frame.
     // Different variables can overlap if `var_lifetime_overlaps_var` is false for them.
     template <specific_coro_type T, int V>
-    constexpr std::size_t var_offset = detail::VarOffset<detail::GetMarker<T>, V>::value;
+    constexpr std::size_t var_offset = detail::RawVarOffset<detail::GetMarker<T>, detail::unpack_var_index<detail::GetMarker<T>>(V)>::value;
 
     // Whether variables `A` and `B` have overlapping lifetime.
     template <specific_coro_type T, int A, int B>
-    constexpr bool var_lifetime_overlaps_var = detail::VarVarReach<detail::GetMarker<T>, A, B>::value;
+    constexpr bool var_lifetime_overlaps_var = detail::RawVarVarReach<
+        detail::GetMarker<T>,
+        detail::unpack_var_index<detail::GetMarker<T>>(A),
+        detail::unpack_var_index<detail::GetMarker<T>>(B)
+    >::value;
 
 
     // Misc:
@@ -1910,7 +2043,7 @@ namespace rcoro
         /* Note that we need `ValueTag<...>` here. Simply forming the pointer doesn't instantiate it in MSVC. */\
         (void)::rcoro::detail::ValueTag<&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<true, _rcoro_Marker>>>{}; \
         /* The second pass instantiation. It would happen automatically when the coroutine is called, but then we miss out variable type information, */\
-        /* which we can't properly collect in the first pass. See `VarTypeReader` and others for details. */\
+        /* which we can't properly collect in the first pass. See `RawVarTypeReader` and others for details. */\
         (void)::rcoro::detail::ValueTag<&decltype(_rcoro_lambda)::template operator()<::rcoro::detail::Frame<false, _rcoro_Marker>>>{}; \
         struct _rcoro_Types \
         { \
@@ -1957,24 +2090,26 @@ namespace rcoro
 
 // An universal step function for our loops.
 #define DETAIL_RCORO_LOOP_STEP(n, d, kind, ...) SF_CAT(DETAIL_RCORO_LOOP_STEP_, kind) d
-#define DETAIL_RCORO_LOOP_STEP_firstcode(ident, yieldindex, varindex, markers) (       ident    , yieldindex  , varindex  , markers)
-#define DETAIL_RCORO_LOOP_STEP_code(ident, yieldindex, varindex, markers)      (       ident    , yieldindex  , varindex  , markers)
-#define DETAIL_RCORO_LOOP_STEP_var(ident, yieldindex, varindex, markers)       (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
-#define DETAIL_RCORO_LOOP_STEP_withvar(ident, yieldindex, varindex, markers)   (SF_CAT(ident, i), yieldindex  , varindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
-#define DETAIL_RCORO_LOOP_STEP_yield(ident, yieldindex, varindex, markers)     (SF_CAT(ident, i), yieldindex+1, varindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_firstcode(ident, yieldindex, rawvarindex, markers) (       ident    , yieldindex  , rawvarindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_code(ident, yieldindex, rawvarindex, markers)      (       ident    , yieldindex  , rawvarindex  , markers)
+#define DETAIL_RCORO_LOOP_STEP_var(ident, yieldindex, rawvarindex, markers)       (SF_CAT(ident, i), yieldindex  , rawvarindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
+#define DETAIL_RCORO_LOOP_STEP_withvar(ident, yieldindex, rawvarindex, markers)   (SF_CAT(ident, i), yieldindex  , rawvarindex+1, (DETAIL_RCORO_IDENTITY markers, DETAIL_RCORO_MARKER_VAR_NAME(ident)))
+#define DETAIL_RCORO_LOOP_STEP_yield(ident, yieldindex, rawvarindex, markers)     (SF_CAT(ident, i), yieldindex+1, rawvarindex  , markers)
 
 // The loop body for the function body generation.
 #define DETAIL_RCORO_CODEGEN_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_CODEGEN_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
-#define DETAIL_RCORO_CODEGEN_LOOP_BODY_firstcode(ident, yieldindex, varindex, markers, ...) DETAIL_RCORO_SKIP_PAR(__VA_ARGS__) // Skip optional parameters.
-#define DETAIL_RCORO_CODEGEN_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...) __VA_ARGS__
-#define DETAIL_RCORO_CODEGEN_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) \
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_firstcode(ident, yieldindex, rawvarindex, markers, ...) DETAIL_RCORO_SKIP_PAR(__VA_ARGS__) // Skip optional parameters.
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_code(ident, yieldindex, rawvarindex, markers, ...) __VA_ARGS__
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_var(ident, yieldindex, rawvarindex, markers, name, ...) \
     /* Make sure we're not preceded by an if/for/while/etc. */\
     /* The test is performed by having two separate statements, where the latter needs the former to be visible to compile. */\
     /* Note that the first `[[maybe_unused]]` is not strictly necessary, but it removes an extra useless warning when this check fails. */\
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))) = true; \
     [[maybe_unused]] static constexpr bool SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_CheckBracesAroundDeclarationOf_, name))) = SF_CAT(_rcoro_, SF_CAT(ident, SF_CAT(_NeedBracesAroundDeclarationOf_, name))); \
+    /* If the variable ends up unused, it will be stored here. */\
+    DETAIL_RCORO_VAR_FALLBACKSTORAGE(ident, rawvarindex); \
     /* If we're not jumping, initialize the variable. */\
-    DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__); \
+    DETAIL_RCORO_VAR_INIT(ident, rawvarindex, __VA_ARGS__); \
     /* Jump target. */\
   SF_CAT(_rcoro_label_, ident): \
     /* The scope marker for `RC_YIELD()`. This used to be combined with one of the two `...CheckBraces...` variables above, */\
@@ -1983,9 +2118,9 @@ namespace rcoro
     /* we can no longer combine those. */\
     [[maybe_unused]] constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; \
     /* This will destroy the variable when it goes out of scope. */\
-    DETAIL_RCORO_VAR_GUARD(varindex, name); \
+    DETAIL_RCORO_VAR_GUARD(ident, rawvarindex, name); \
     /* Create a reference as a fancy name for our storage variable. */\
-    DETAIL_RCORO_VAR_REF(varindex, name); \
+    DETAIL_RCORO_VAR_REF(ident, rawvarindex, name); \
     /* Jump to the next macro, if necessary. */\
     if (_rcoro_jump_to != 0) \
     { \
@@ -1993,37 +2128,48 @@ namespace rcoro
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
     } \
     /* Stateful meta magic. This can be placed anywhere. */\
-    DETAIL_RCORO_VAR_META(varindex, markers) \
+    DETAIL_RCORO_VAR_META(rawvarindex, markers) \
     /* Force trailing semicolon. */\
     do {} while (false)
-#define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) \
-    if (void(DETAIL_RCORO_VAR_INIT(varindex, __VA_ARGS__)), false) {} else \
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_withvar(ident, yieldindex, rawvarindex, markers, name, ...) \
+    /* Jump through some hoops to get ourselves an uninitialized fallback-storage. */\
+    /* Would normally put it into an `if` condition, but that requires an initializer, stopping us from `goto`ing over it. */\
+    if (true) goto SF_CAT(_rcoro_label2_, ident); else \
+    for (DETAIL_RCORO_VAR_FALLBACKSTORAGE(ident, rawvarindex); false;) \
+  SF_CAT(_rcoro_label2_, ident): \
+    if (void(DETAIL_RCORO_VAR_INIT(ident, rawvarindex, __VA_ARGS__)), false) {} else \
   SF_CAT(_rcoro_label_, ident): \
     if (constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = true; false) {} else \
-    if (DETAIL_RCORO_VAR_GUARD(varindex, name); false) {} else \
-    if (DETAIL_RCORO_VAR_REF(varindex, name); _rcoro_jump_to != 0) \
+    if (DETAIL_RCORO_VAR_GUARD(ident, rawvarindex, name); false) {} else \
+    if (DETAIL_RCORO_VAR_REF(ident, rawvarindex, name); _rcoro_jump_to != 0) \
     { \
         /* MSVC doesn't like an attribute plus `; cond` in an `if`-statement, so we do it the old way. */\
         (void)DETAIL_RCORO_MARKER_VAR_NAME(ident); \
-        DETAIL_RCORO_VAR_META(varindex, markers) \
+        DETAIL_RCORO_VAR_META(rawvarindex, markers) \
         goto SF_CAT(_rcoro_label_, SF_CAT(ident, i)); \
     } \
     else
 // Variable code pieces:
-#define DETAIL_RCORO_VAR_INIT(varindex, ...) \
-    ::rcoro::detail::VarTypeHelper<_rcoro_frame_t::fake, _rcoro_Marker, varindex>(::new((void *)_rcoro_frame.template var_storage_untyped<varindex>()) auto(__VA_ARGS__))
-#define DETAIL_RCORO_VAR_GUARD(varindex, name) \
-    ::rcoro::detail::VarGuard<_rcoro_frame_t, varindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template var_exists<varindex>() ? &_rcoro_frame : nullptr)
-#define DETAIL_RCORO_VAR_REF(varindex, name) \
-    auto &RCORO_RESTRICT name = _rcoro_frame.template var_or_bad_ref<varindex>(_rcoro_jump_to == 0)
-#define DETAIL_RCORO_VAR_META(varindex, markers) \
+#define DETAIL_RCORO_VAR_FALLBACKSTORAGE(ident, rawvarindex) \
+    ::rcoro::detail::RawVarFallbackStorage<_rcoro_frame_t::fake, _rcoro_Marker, rawvarindex> SF_CAT(_rcoro_fallback_storage_, ident)
+#define DETAIL_RCORO_VAR_INIT(ident, rawvarindex, ...) \
+    ::rcoro::detail::RawVarTypeHelper<_rcoro_frame_t::fake, _rcoro_Marker, rawvarindex>( \
+        ::new( \
+            (void *)_rcoro_frame.template raw_var_storage_for_init<rawvarindex>(SF_CAT(_rcoro_fallback_storage_, ident).ptr()) \
+        ) auto(__VA_ARGS__) \
+    )
+#define DETAIL_RCORO_VAR_GUARD(ident, rawvarindex, name) \
+    ::rcoro::detail::RawVarGuard<_rcoro_frame_t, rawvarindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template raw_var_exists<rawvarindex>() ? &_rcoro_frame : nullptr, SF_CAT(_rcoro_fallback_storage_, ident).ptr())
+#define DETAIL_RCORO_VAR_REF(ident, rawvarindex, name) \
+    auto &RCORO_RESTRICT name = _rcoro_frame.template raw_var_or_bad_ref<rawvarindex>(_rcoro_jump_to == 0, SF_CAT(_rcoro_fallback_storage_, ident).ptr())
+#define DETAIL_RCORO_VAR_META(rawvarindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
-    (void)::rcoro::detail::VarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, varindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{};
-#define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) \
+    (void)::rcoro::detail::RawVarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, rawvarindex, ::std::array<bool, rawvarindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{};
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, name) \
     do \
     { \
         /* Analyze lifetime overlap with other variables. */\
-        (void)::rcoro::detail::VarYieldReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, yieldindex, ::std::array<bool, varindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{}; \
+        (void)::rcoro::detail::RawVarYieldReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, yieldindex DETAIL_RCORO_LEADING_COMMA(DETAIL_RCORO_EXPAND_MARKERS markers)>{}; \
         /* Remember the position. */\
         _rcoro_frame.pos = yieldindex; \
         /* Pause. */\
@@ -2043,27 +2189,27 @@ namespace rcoro
     while (false)
 // The code inserted after the loop.
 #define DETAIL_RCORO_CODEGEN_LOOP_FINAL(n, d) DETAIL_RCORO_CALL(DETAIL_RCORO_CODEGEN_LOOP_FINAL_, DETAIL_RCORO_IDENTITY d)
-#define DETAIL_RCORO_CODEGEN_LOOP_FINAL_(ident, yieldindex, varindex, markers) SF_CAT(_rcoro_label_, ident): ;
+#define DETAIL_RCORO_CODEGEN_LOOP_FINAL_(ident, yieldindex, rawvarindex, markers) SF_CAT(_rcoro_label_, ident): ;
 
 // The loop body to generate helper variables to analyze which variables are visible from which yield points.
 #define DETAIL_RCORO_MARKERVARS_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_MARKERVARS_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
-#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
-#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = false;
-#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = false;
-#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_yield(ident, yieldindex, varindex, markers, ...)
+#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_code(ident, yieldindex, rawvarindex, markers, ...)
+#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_var(ident, yieldindex, rawvarindex, markers, name, ...) [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = false;
+#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_withvar(ident, yieldindex, rawvarindex, markers, name, ...) [[maybe_unused]] static constexpr bool DETAIL_RCORO_MARKER_VAR_NAME(ident) = false;
+#define DETAIL_RCORO_MARKERVARS_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, ...)
 
 // The loop body to generate variable descriptions for reflection.
 #define DETAIL_RCORO_VARDESC_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_VARDESC_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
-#define DETAIL_RCORO_VARDESC_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
-#define DETAIL_RCORO_VARDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
-#define DETAIL_RCORO_VARDESC_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
-#define DETAIL_RCORO_VARDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, ...)
+#define DETAIL_RCORO_VARDESC_LOOP_BODY_code(ident, yieldindex, rawvarindex, markers, ...)
+#define DETAIL_RCORO_VARDESC_LOOP_BODY_var(ident, yieldindex, rawvarindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
+#define DETAIL_RCORO_VARDESC_LOOP_BODY_withvar(ident, yieldindex, rawvarindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(#name)>
+#define DETAIL_RCORO_VARDESC_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, ...)
 
 // The loop body to generate yield point descriptions for reflection.
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_YIELDDESC_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
-#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_code(ident, yieldindex, varindex, markers, ...)
-#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_var(ident, yieldindex, varindex, markers, ...)
-#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_withvar(ident, yieldindex, varindex, markers, ...)
-#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_yield(ident, yieldindex, varindex, markers, name) , ::rcoro::detail::ValueTag<::rcoro::const_string("" name "")>
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_code(ident, yieldindex, rawvarindex, markers, ...)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_var(ident, yieldindex, rawvarindex, markers, ...)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_withvar(ident, yieldindex, rawvarindex, markers, ...)
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, name) , ::rcoro::detail::ValueTag<::rcoro::const_string("" name "")>
 
 #endif

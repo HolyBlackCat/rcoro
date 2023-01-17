@@ -363,10 +363,13 @@ class Expect
 
 int main()
 {
+    // Silence GCC warnings somehow.
+    // Test layout in presence of optimized-out variables.
+    // Test every single function, that it correctly applies the unused var offset. (Two vars, one unused (with bad type), another used).
+
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
-    //   * Ignore variables that aren't visible on any yield points.
     //   * `.var` and `.var_exists` should disambiguate variable names based on yield index.
     //   * Overaligned heap allocation?
 
@@ -455,19 +458,18 @@ int main()
             }
         }
 
-        { // Single variable.
+        { // Single unused variable, which is optimized out.
             auto x = RCORO(RC_VAR(a, 42); (void)a;);
             using X = decltype(x);
-            static_assert(rcoro::num_vars<X> == 1);
-            static_assert(rcoro::var_index<X>("a") == 0);
-            THROWS("unknown", rcoro::var_index<X>("?"));
-            static_assert(rcoro::var_index_or_negative<X>("a") == 0);
-            static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
-            static_assert(rcoro::var_name<X>(0) == "a");
-            THROWS("out of range", rcoro::var_name<X>(1));
+            static_assert(rcoro::frame_size<X> == 0);
+            static_assert(rcoro::frame_alignment<X> == 1);
+            static_assert(rcoro::num_vars<X> == 0);
+            THROWS("unknown", rcoro::var_index<X>("a"));
+            static_assert(rcoro::var_index_or_negative<X>("a") == rcoro::unknown_name);
+            THROWS("out of range", rcoro::var_name<X>(0));
             static_assert(rcoro::num_yields<X> == 1);
             static_assert(rcoro::yield_vars<X, 0>.empty());
-            ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
+            THROWS("out of range", !rcoro::var_lifetime_overlaps_yield<X>(0, 0));
 
             THROWS("unknown", rcoro::var_index_at_yield<X>(0, "a"));
             static_assert(rcoro::var_index_at_yield_or_negative<X>(0, "a") == rcoro::unknown_name);
@@ -481,6 +483,11 @@ int main()
             static_assert(rcoro::frame_size<X> == sizeof(int));
             static_assert(rcoro::frame_alignment<X> == alignof(int));
             static_assert(rcoro::num_vars<X> == 1);
+            static_assert(rcoro::var_index<X>("a") == 0);
+            THROWS("unknown", rcoro::var_index<X>("?"));
+            static_assert(rcoro::var_index_or_negative<X>("a") == 0);
+            static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
+            static_assert(rcoro::var_name<X>(0) == "a");
             static_assert(rcoro::num_yields<X> == 2);
             static_assert(rcoro::yield_vars<X, 0>.empty());
             static_assert(rcoro::yield_vars<X, 1> == std::array{0});
@@ -537,8 +544,7 @@ int main()
 
             { // Non-trivially copyable variable, but not visible at any yield points.
                 auto x = RCORO(RC_VAR(a, A<int>(42)); (void)a;);
-                // Currently those are taken into account, but we can change it later.
-                static_assert(!rcoro::frame_is_trivially_copyable<decltype(x)>);
+                static_assert(rcoro::frame_is_trivially_copyable<decltype(x)>);
             }
         }
     }
@@ -546,24 +552,31 @@ int main()
     { // A simple coroutine.
         auto x = RCORO({
             {
-                RC_VAR(a, A(10));
+                // One unused variable, to skip and index and check the lifetime correctness.
+                RC_VAR(a, A(10)); // unused, no index
                 (void)a;
             }
+
+            { // Another unused variable, to test that accessing one doesn't crash.
+                RC_VAR(aa, 42);
+                aa = 43;
+            }
+
             {
-                RC_VAR(b, A(20));
+                RC_VAR(b, A(20)); // 0
                 (void)b;
                 RC_YIELD("f");
             }
 
-            RC_FOR((c, A(char{})); char(c) < 3; c = char(char(c)+1))
+            RC_FOR((c, A(char{})); char(c) < 3; c = char(char(c)+1)) // 1
             {
-                RC_WITH_VAR(d,A(short(30)))
+                RC_WITH_VAR(d,A(short(30))) // 2
                 {
                     (void)d;
                     RC_YIELD("g");
                 }
 
-                RC_VAR(e, A(40));
+                RC_VAR(e, A(40)); // 3
                 (void)e;
                 RC_YIELD("h");
             }
@@ -573,29 +586,32 @@ int main()
         using X = decltype(x);
         static_assert(rcoro::frame_size<X> == sizeof(int) * 2);
         static_assert(rcoro::frame_alignment<X> == alignof(int));
-        static_assert(rcoro::num_vars<X> == 5);
+        static_assert(rcoro::num_vars<X> == 4);
+        THROWS("unknown", rcoro::var_index<X>("a")); // `a` is unused, and is skipped.
+        static_assert(rcoro::var_name<X>(0) == "b");
+        static_assert(rcoro::var_name<X>(1) == "c");
+        static_assert(rcoro::var_name<X>(2) == "d");
+        static_assert(rcoro::var_name<X>(3) == "e");
         static_assert(rcoro::var_offset<X, 0> == 0);
         static_assert(rcoro::var_offset<X, 1> == 0);
-        static_assert(rcoro::var_offset<X, 2> == 0);
-        static_assert(rcoro::var_offset<X, 3> == sizeof(short));
-        static_assert(rcoro::var_offset<X, 4> == sizeof(int));
-        static_assert( rcoro::var_lifetime_overlaps_var<X, 0, 0> && !rcoro::var_lifetime_overlaps_var<X, 1, 0> && !rcoro::var_lifetime_overlaps_var<X, 2, 0> && !rcoro::var_lifetime_overlaps_var<X, 3, 0> && !rcoro::var_lifetime_overlaps_var<X, 4, 0>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 1> &&  rcoro::var_lifetime_overlaps_var<X, 1, 1> && !rcoro::var_lifetime_overlaps_var<X, 2, 1> && !rcoro::var_lifetime_overlaps_var<X, 3, 1> && !rcoro::var_lifetime_overlaps_var<X, 4, 1>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 2> && !rcoro::var_lifetime_overlaps_var<X, 1, 2> &&  rcoro::var_lifetime_overlaps_var<X, 2, 2> &&  rcoro::var_lifetime_overlaps_var<X, 3, 2> &&  rcoro::var_lifetime_overlaps_var<X, 4, 2>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 3> && !rcoro::var_lifetime_overlaps_var<X, 1, 3> &&  rcoro::var_lifetime_overlaps_var<X, 2, 3> &&  rcoro::var_lifetime_overlaps_var<X, 3, 3> && !rcoro::var_lifetime_overlaps_var<X, 4, 3>);
-        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 4> && !rcoro::var_lifetime_overlaps_var<X, 1, 4> &&  rcoro::var_lifetime_overlaps_var<X, 2, 4> && !rcoro::var_lifetime_overlaps_var<X, 3, 4> &&  rcoro::var_lifetime_overlaps_var<X, 4, 4>);
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 4, 0> && rcoro::yield_vars<X, 0>.empty());
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 1> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 4, 1> && rcoro::yield_vars<X, 1> == std::array{1});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 3, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 4, 2> && rcoro::yield_vars<X, 2> == std::array{2,3});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 4, 3> && rcoro::yield_vars<X, 3> == std::array{2,4});
+        static_assert(rcoro::var_offset<X, 2> == sizeof(short));
+        static_assert(rcoro::var_offset<X, 3> == sizeof(int));
+        static_assert( rcoro::var_lifetime_overlaps_var<X, 0, 0> && !rcoro::var_lifetime_overlaps_var<X, 1, 0> && !rcoro::var_lifetime_overlaps_var<X, 2, 0> && !rcoro::var_lifetime_overlaps_var<X, 3, 0>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 1> &&  rcoro::var_lifetime_overlaps_var<X, 1, 1> &&  rcoro::var_lifetime_overlaps_var<X, 2, 1> &&  rcoro::var_lifetime_overlaps_var<X, 3, 1>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 2> &&  rcoro::var_lifetime_overlaps_var<X, 1, 2> &&  rcoro::var_lifetime_overlaps_var<X, 2, 2> && !rcoro::var_lifetime_overlaps_var<X, 3, 2>);
+        static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 3> &&  rcoro::var_lifetime_overlaps_var<X, 1, 3> && !rcoro::var_lifetime_overlaps_var<X, 2, 3> &&  rcoro::var_lifetime_overlaps_var<X, 3, 3>);
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 0> && rcoro::yield_vars<X, 0>.empty());
+        static_assert( rcoro::var_lifetime_overlaps_yield_const<X, 0, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 1> && rcoro::yield_vars<X, 1> == std::array{0});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 2> && rcoro::yield_vars<X, 2> == std::array{1,2});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 3, 3> && rcoro::yield_vars<X, 3> == std::array{1,3});
         THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(-1, 0));
         THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(rcoro::num_vars<X>, 0));
         THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, -1));
         THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, rcoro::num_yields<X>));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0) && !rcoro::var_lifetime_overlaps_yield<X>(1, 0) && !rcoro::var_lifetime_overlaps_yield<X>(2, 0) && !rcoro::var_lifetime_overlaps_yield<X>(3, 0) && !rcoro::var_lifetime_overlaps_yield<X>(4, 0));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 1) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 1) && !rcoro::var_lifetime_overlaps_yield<X>(2, 1) && !rcoro::var_lifetime_overlaps_yield<X>(3, 1) && !rcoro::var_lifetime_overlaps_yield<X>(4, 1));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 2) && !rcoro::var_lifetime_overlaps_yield<X>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(3, 2) && !rcoro::var_lifetime_overlaps_yield<X>(4, 2));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 3) && !rcoro::var_lifetime_overlaps_yield<X>(1, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 3) && !rcoro::var_lifetime_overlaps_yield<X>(3, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(4, 3));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0) && !rcoro::var_lifetime_overlaps_yield<X>(1, 0) && !rcoro::var_lifetime_overlaps_yield<X>(2, 0) && !rcoro::var_lifetime_overlaps_yield<X>(3, 0));
+        ASSERT( rcoro::var_lifetime_overlaps_yield<X>(0, 1) && !rcoro::var_lifetime_overlaps_yield<X>(1, 1) && !rcoro::var_lifetime_overlaps_yield<X>(2, 1) && !rcoro::var_lifetime_overlaps_yield<X>(3, 1));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 2) && !rcoro::var_lifetime_overlaps_yield<X>(3, 2));
+        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 3) && !rcoro::var_lifetime_overlaps_yield<X>(2, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(3, 3));
 
         Expect ex(R"(
             A<int>::A(10)                # `a` created and destroyed immediately.
@@ -637,13 +653,13 @@ int main()
 
         std::string state_dump;
 
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
         *test_detail::a_log += "...\n";
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" && !x.var_exists<"a">() &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
         *test_detail::a_log += "...\n";
         for (int i = 0; i < 3; i++)
         {
-            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
             *test_detail::a_log += "...\n";
 
             if (i == 1)
@@ -653,10 +669,10 @@ int main()
                 state_dump = ss.str();
             }
 
-            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"a">() && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
             *test_detail::a_log += "...\n";
         }
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 4 && x.yield_point_name() == "i" && !x.var_exists<"a">() && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && !x());
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 4 && x.yield_point_name() == "i" && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && !x());
         ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::success);
 
         { // Debug info text.
@@ -666,24 +682,22 @@ int main()
 R"(copying: ctor=yes assign=yes
 moving: ctor=yes(nothrow) assign=yes(nothrow)
 frame: size=)" << rcoro::frame_size<X> << R"( align=)" << rcoro::frame_alignment<X> << R"(
-5 variables:
-  0. a, A<int>
+4 variables:
+  0. b, A<int>
       offset=)" << rcoro::var_offset<X, 0> << R"(, size=)" << sizeof(rcoro::var_type<X, 0>) << R"(, align=)" << alignof(rcoro::var_type<X, 0>) << R"(
-  1. b, A<int>
+  1. c, A<char>
       offset=)" << rcoro::var_offset<X, 1> << R"(, size=)" << sizeof(rcoro::var_type<X, 1>) << R"(, align=)" << alignof(rcoro::var_type<X, 1>) << R"(
-  2. c, A<char>
+  2. d, A<short>
       offset=)" << rcoro::var_offset<X, 2> << R"(, size=)" << sizeof(rcoro::var_type<X, 2>) << R"(, align=)" << alignof(rcoro::var_type<X, 2>) << R"(
-  3. d, A<short>
+      visible_vars: 1.c
+  3. e, A<int>
       offset=)" << rcoro::var_offset<X, 3> << R"(, size=)" << sizeof(rcoro::var_type<X, 3>) << R"(, align=)" << alignof(rcoro::var_type<X, 3>) << R"(
-      visible_vars: 2.c
-  4. e, A<int>
-      offset=)" << rcoro::var_offset<X, 4> << R"(, size=)" << sizeof(rcoro::var_type<X, 4>) << R"(, align=)" << alignof(rcoro::var_type<X, 4>) << R"(
-      visible_vars: 2.c
+      visible_vars: 1.c
 5 yields:
   0. ``
-  1. `f`, visible_vars: 1.b
-  2. `g`, visible_vars: 2.c, 3.d
-  3. `h`, visible_vars: 2.c, 4.e
+  1. `f`, visible_vars: 0.b
+  2. `g`, visible_vars: 1.c, 2.d
+  3. `h`, visible_vars: 1.c, 3.e
   4. `i`)";
 
                 std::ostringstream log_ss;
@@ -694,7 +708,10 @@ frame: size=)" << rcoro::frame_size<X> << R"( align=)" << rcoro::frame_alignment
 
                 if (log != expected_ss.str())
                 {
+                    std::cout << "--- Got:\n";
                     std::cout << log << '\n';
+                    std::cout << "--- But expected:\n";
+                    std::cout << expected_ss.str() << '\n';
                     FAIL("Debug output mismatch (static)!");
                 }
             }
@@ -702,15 +719,17 @@ frame: size=)" << rcoro::frame_size<X> << R"( align=)" << rcoro::frame_alignment
             { // Dynamic.
                 std::string expected =
 R"(yield_point = 3, `h`
-  0. a - dead
-  1. b - dead
-  2. c - alive but not printable
-  3. d - dead
-  4. e = 40)";
+  0. b - dead
+  1. c - alive but not printable
+  2. d - dead
+  3. e = 40)";
 
                 if (expected != state_dump)
                 {
-                    std::cout << state_dump;
+                    std::cout << "--- Got:\n";
+                    std::cout << state_dump << '\n';
+                    std::cout << "--- But expected:\n";
+                    std::cout << expected << '\n';
                     FAIL("Debug output mismatch (dynamic)!");
                 }
             }
@@ -747,9 +766,16 @@ R"(yield_point = 3, `h`
 
         { // Stateful.
             auto x = RCORO({
+                if (false)
+                {
+                    RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
                 {
                     RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
                     (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(short(2)));
@@ -912,9 +938,16 @@ R"(yield_point = 3, `h`
     { // User exceptions.
         { // Body throws.
             auto x = RCORO({
+                if (false)
+                {
+                    RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
                 {
                     RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
                     (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(short(2)));
@@ -955,9 +988,16 @@ R"(yield_point = 3, `h`
                 *test_detail::a_log += "throw!\n";
                 throw 42;
 
+                if (false)
+                {
+                    RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
                 {
                     RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
                     (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(short(2)));
@@ -998,9 +1038,16 @@ R"(yield_point = 3, `h`
                     throw 42;
                 }
 
+                if (false)
+                {
+                    RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
                 {
                     RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
                     (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(short(2)));
@@ -1197,15 +1244,23 @@ R"(yield_point = 3, `h`
         }
 
         { // Immovable var.
-            auto x = RCORO(RC_VAR(a, B<int, ops::none>(1)); (void)a;);
+            auto x = RCORO(RC_VAR(a, B<int, ops::none>(1)); (void)a; RC_YIELD();); // Note that we need a yield to stop the variable from being optimized out.
             static_assert(!std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
             static_assert(!std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
             static_assert(!std::is_move_assignable_v<decltype(x)> && !std::is_nothrow_move_assignable_v<decltype(x)>);
         }
 
+        { // Immovable var, but it's optimized out.
+            auto x = RCORO(RC_VAR(a, B<int, ops::none>(1)); (void)a;);
+            static_assert(std::is_copy_constructible_v<decltype(x)> && std::is_nothrow_copy_constructible_v<decltype(x)>);
+            static_assert(std::is_move_constructible_v<decltype(x)> && std::is_nothrow_move_constructible_v<decltype(x)>);
+            static_assert(std::is_copy_assignable_v<decltype(x)> && std::is_nothrow_copy_assignable_v<decltype(x)>);
+            static_assert(std::is_move_assignable_v<decltype(x)> && std::is_nothrow_move_assignable_v<decltype(x)>);
+        }
+
         { // Only move-constructible var.
-            auto x = RCORO(RC_VAR(a, B<int, ops::move_ctor>(1)); (void)a;);
+            auto x = RCORO(RC_VAR(a, B<int, ops::move_ctor>(1)); (void)a; RC_YIELD(););
             static_assert(!std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
             static_assert(std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
@@ -1213,7 +1268,7 @@ R"(yield_point = 3, `h`
         }
 
         { // Only nothrow-move-constructible var.
-            auto x = RCORO(RC_VAR(a, B<int, ops::nothrow_move_ctor>(1)); (void)a;);
+            auto x = RCORO(RC_VAR(a, B<int, ops::nothrow_move_ctor>(1)); (void)a; RC_YIELD(););
             static_assert(!std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
             static_assert(std::is_move_constructible_v<decltype(x)> && std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(!std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
@@ -1221,7 +1276,7 @@ R"(yield_point = 3, `h`
         }
 
         { // Copy- and move-constructible var.
-            auto x = RCORO(RC_VAR(a, B<int, ops::copy_ctor | ops::move_ctor>(1)); (void)a;);
+            auto x = RCORO(RC_VAR(a, B<int, ops::copy_ctor | ops::move_ctor>(1)); (void)a; RC_YIELD(););
             static_assert(std::is_copy_constructible_v<decltype(x)> && !std::is_nothrow_copy_constructible_v<decltype(x)>);
             static_assert(std::is_move_constructible_v<decltype(x)> && !std::is_nothrow_move_constructible_v<decltype(x)>);
             static_assert(std::is_copy_assignable_v<decltype(x)> && !std::is_nothrow_copy_assignable_v<decltype(x)>);
@@ -1291,9 +1346,16 @@ R"(yield_point = 3, `h`
         auto lambda = [&](auto move, auto assign)
         {
             auto x = RCORO({
+                if (false)
+                {
+                    RC_VAR(optimized_out, A(short(0))); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
                 {
                     RC_VAR(unused, A(0)); // Skip index `0` to catch more bugs.
                     (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(1)); (void)a;
@@ -1412,9 +1474,16 @@ R"(yield_point = 3, `h`
     { // Variable access.
         { // Basic checks.
             auto x = RCORO({
+                if (false)
                 {
-                    RC_VAR(a, int{}); // Skip index 0 to catch more bugs.
+                    RC_VAR(optimized_out, char{}); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
+                {
+                    RC_VAR(a, int{}); // Skip index `0` to catch more bugs.
                     (void)a;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(b, short(1));
@@ -1517,8 +1586,17 @@ R"(yield_point = 3, `h`
         { // `load_raw_bytes_UNSAFE`.
             auto x = RCORO({
                 RC_YIELD();
+
+                if (false)
                 {
-                    RC_VAR(unused, A(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                    RC_VAR(optimized_out, A(char(42))); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
+                {
+                    RC_VAR(unused, A(0)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(short(1))); (void)a;
@@ -1606,7 +1684,7 @@ R"(yield_point = 3, `h`
                     y();
 
                     y.rewind()();
-                    y.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 2, [&]
+                    y.load_raw_bytes_UNSAFE(rcoro::finish_reason::not_finished, 3, [&]
                     {
                         // Create out of order for test purposes, why not.
                         ::new((void *)((char *)y.frame_storage() + rcoro::var_offset<decltype(y), 2>)) A(long(2));
@@ -1615,7 +1693,7 @@ R"(yield_point = 3, `h`
                         return true;
                     });
                     ASSERT(!y.finished());
-                    ASSERT(y.yield_point() == 2);
+                    ASSERT(y.yield_point() == 3);
                     *test_detail::a_log += "... done loading\n";
                 }
             }
@@ -1625,8 +1703,17 @@ R"(yield_point = 3, `h`
             // We already have a proper test for the `_UNSAFE` version, so we just do a bare minimum.
             auto x = RCORO((int &out)
             {
+                if (false)
                 {
-                    RC_VAR(unused, int(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                    // Here we use a non-trivially-copyable type to test that it doesn't stop us from using `load_raw_bytes`.
+                    RC_VAR(optimized_out, std::string{}); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
+                {
+                    RC_VAR(unused, int{}); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(x, 0);
@@ -1637,7 +1724,7 @@ R"(yield_point = 3, `h`
                 RC_YIELD();
             });
 
-            ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 1, [&]
+            ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 2, [&]
             {
                 int value = 42;
                 std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x), 1>, &value, sizeof(int));
@@ -1652,7 +1739,7 @@ R"(yield_point = 3, `h`
                 x.rewind()(result)(result);
                 int value = 43;
                 std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x), 1>, &value, sizeof(int));
-                ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 1, []{return true;}));
+                ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 2, []{return true;}));
 
                 result = 0;
                 x(result);
@@ -1664,8 +1751,16 @@ R"(yield_point = 3, `h`
             auto x = RCORO({
                 RC_YIELD();
 
+                if (false)
                 {
-                    RC_VAR(unused, A(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                    RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
+                {
+                    RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(a, A(short(1))); (void)a;
@@ -1702,7 +1797,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    ASSERT(y.load({}, 2, [](auto index, auto construct)
+                    ASSERT(y.load({}, 3, [](auto index, auto construct)
                     {
                         *test_detail::a_log += "... " + std::to_string(index.value) + '\n';
 
@@ -1717,7 +1812,7 @@ R"(yield_point = 3, `h`
                     }));
                     *test_detail::a_log += "... done\n";
 
-                    ASSERT(!y.finished() && y.yield_point() == 2);
+                    ASSERT(!y.finished() && y.yield_point() == 3);
                     ASSERT(short(y.var<"a">()) == 10);
                     ASSERT(long(y.var<"b">()) == 20);
                     ASSERT(int(y.var<"c">()) == 30);
@@ -1770,7 +1865,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    ASSERT(!y.load({}, 2, [](auto index, auto construct)
+                    ASSERT(!y.load({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -1795,7 +1890,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("test!", !y.load({}, 2, [](auto index, auto construct)
+                    THROWS("test!", !y.load({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -1823,7 +1918,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("test!", !y.load({}, 2, [](auto index, auto construct)
+                    THROWS("test!", !y.load({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -1850,7 +1945,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("at most once", !y.load({}, 2, [](auto index, auto construct)
+                    THROWS("at most once", !y.load({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -1872,8 +1967,16 @@ R"(yield_point = 3, `h`
             auto x = RCORO({
                 RC_YIELD();
 
+                if (false)
                 {
-                    RC_VAR(unused, A(0)); (void)unused; // Skip index 0, this helps catch bugs.
+                    RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                    (void)optimized_out;
+                }
+
+                {
+                    RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
+                    (void)unused;
+                    if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                 }
 
                 RC_VAR(aa, A(short(1))); (void)aa;
@@ -1913,7 +2016,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    ASSERT(y.load_unordered({}, 2,
+                    ASSERT(y.load_unordered({}, 3,
                         [](auto var)
                         {
                             // Can't use the correct variable types here, because this lambda must work for every yield point.
@@ -1930,7 +2033,7 @@ R"(yield_point = 3, `h`
                             construct(typename var_type::type(value));
                         }
                     ));
-                    ASSERT(!y.finished() && y.yield_point() == 2);
+                    ASSERT(!y.finished() && y.yield_point() == 3);
                     ASSERT(short(y.var<"aa">()) == 10);
                     ASSERT(long(y.var<"bb">()) == 20);
                     ASSERT(int(y.var<"cc">()) == 30);
@@ -1991,9 +2094,16 @@ R"(yield_point = 3, `h`
 
                 { // Coroutine with duplicate variable names, but unique per yield.
                     auto y = RCORO({
+                        if (false)
                         {
-                            RC_VAR(unused, 0); // Skip index 0 to catch more bugs.
+                            RC_VAR(optimized_out, A(0)); // Optimize out a variable to catch more bugs.
+                            (void)optimized_out;
+                        }
+
+                        {
+                            RC_VAR(unused, A(1)); // Skip index `0` to catch more bugs.
                             (void)unused;
+                            if (false) RC_YIELD(); // Prevent the variable from being optimized out.
                         }
 
                         RC_VAR(a, 1);
@@ -2014,7 +2124,7 @@ R"(yield_point = 3, `h`
 
                     static_assert(rcoro::var_names_are_unique_per_yield<decltype(y)>);
 
-                    for (int yield_index : {1, 2})
+                    for (int yield_index : {2, 3})
                     {
                         ASSERT(y.load_unordered({}, yield_index,
                             [&](auto var)
@@ -2031,8 +2141,8 @@ R"(yield_point = 3, `h`
                         ));
 
                         ASSERT(!y.finished() && y.yield_point() == yield_index);
-                        ASSERT(!y.var_exists<"unused">() && y.var_exists<"a">() && y.var_exists<2>() == (yield_index == 1) && y.var_exists<3>() == (yield_index == 2));
-                        ASSERT(y.var<"a">() == 10 && (yield_index == 1 ? y.var<2>() : y.var<3>()) == 20);
+                        ASSERT(!y.var_exists<"unused">() && y.var_exists<"a">() && y.var_exists<2>() == (yield_index == 2) && y.var_exists<3>() == (yield_index == 3));
+                        ASSERT(y.var<"a">() == 10 && (yield_index == 2 ? y.var<2>() : y.var<3>()) == 20);
                     }
                 }
             }
@@ -2050,7 +2160,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    ASSERT(!y.load_unordered({}, 2,
+                    ASSERT(!y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2080,7 +2190,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("test!", y.load_unordered({}, 2,
+                    THROWS("test!", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2111,7 +2221,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("variables are missing", y.load_unordered({}, 2,
+                    THROWS("variables are missing", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2141,7 +2251,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("already loaded", y.load_unordered({}, 2,
+                    THROWS("already loaded", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2175,7 +2285,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("out of range", y.load_unordered({}, 2,
+                    THROWS("out of range", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2206,7 +2316,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("out of range", y.load_unordered({}, 2,
+                    THROWS("out of range", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2237,7 +2347,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("doesn't exist at this yield point", y.load_unordered({}, 2,
+                    THROWS("doesn't exist at this yield point", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2268,7 +2378,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("already loaded", y.load_unordered({}, 2,
+                    THROWS("already loaded", y.load_unordered({}, 3,
                         [](auto var)
                         {
                             var(2, 20);
@@ -2632,7 +2742,7 @@ R"(yield_point = 3, `h`
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, decltype(x)>);
 
                 // Reject non-copyable coroutine.
-                auto y = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a;);
+                auto y = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a; RC_YIELD(););
                 static_assert(!std::is_constructible_v<rcoro::any<>, decltype(y)>);
                 static_assert(std::is_constructible_v<rcoro::any_noncopyable<>, decltype(y)>);
             }

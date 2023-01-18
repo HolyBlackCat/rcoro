@@ -363,10 +363,6 @@ class Expect
 
 int main()
 {
-    // Silence GCC warnings somehow.
-    // Test layout in presence of optimized-out variables.
-    // Test every single function, that it correctly applies the unused var offset. (Two vars, one unused (with bad type), another used).
-
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
@@ -549,6 +545,99 @@ int main()
         }
     }
 
+    { // Unused variables.
+        // Unused variables should be optimized away and not occupy indices.
+
+        { // Generic tests.
+            auto x = RCORO({
+                {
+                    RC_VAR(a, B<int, ops::none>(1));
+                    (void)a;
+                }
+
+                RC_VAR(b, short(2));
+                (void)b;
+                RC_YIELD();
+
+                RC_VAR(c, B<int, ops::none>(3));
+                (void)c;
+            });
+            using X = decltype(x);
+
+            static_assert(rcoro::frame_size<X> == sizeof(short));
+            static_assert(rcoro::frame_alignment<X> == alignof(short));
+            static_assert(rcoro::var_offset<X, 0> == 0);
+
+            static_assert(std::is_copy_constructible_v<X> && std::is_nothrow_copy_constructible_v<X>);
+            static_assert(std::is_move_constructible_v<X> && std::is_nothrow_move_constructible_v<X>);
+            static_assert(std::is_copy_assignable_v<X> && std::is_nothrow_copy_assignable_v<X>);
+            static_assert(std::is_move_assignable_v<X> && std::is_nothrow_move_assignable_v<X>);
+            static_assert(rcoro::frame_is_trivially_copyable<X>);
+
+            static_assert(rcoro::num_vars<X> == 1);
+            static_assert(rcoro::var_name_const<X, 0>.view() == "b");
+            static_assert(std::is_same_v<rcoro::var_type<X, 0>, short>);
+
+            static_assert(rcoro::var_index_or_negative<X>("a") == rcoro::unknown_name);
+            static_assert(rcoro::var_index_or_negative<X>("b") == 0);
+            static_assert(rcoro::var_index_or_negative<X>("c") == rcoro::unknown_name);
+            THROWS("unknown", rcoro::var_index<X>("a"));
+            static_assert(rcoro::var_index<X>("b") == 0);
+            THROWS("unknown", rcoro::var_index<X>("c"));
+            static_assert(rcoro::var_index_const<X, "b"> == 0); // Doesn't compile for unused variables.
+
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(0, "a") == rcoro::unknown_name);
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(0, "b") == rcoro::unknown_name);
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(0, "c") == rcoro::unknown_name);
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(1, "a") == rcoro::unknown_name);
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(1, "b") == 0);
+            static_assert(rcoro::var_index_at_yield_or_negative<X>(1, "c") == rcoro::unknown_name);
+            THROWS("unknown", rcoro::var_index_at_yield<X>(0, "a"));
+            THROWS("unknown", rcoro::var_index_at_yield<X>(0, "b"));
+            THROWS("unknown", rcoro::var_index_at_yield<X>(0, "c"));
+            THROWS("unknown", rcoro::var_index_at_yield<X>(1, "a"));
+            static_assert(rcoro::var_index_at_yield<X>(1, "b") == 0);
+            THROWS("unknown", rcoro::var_index_at_yield<X>(1, "c"));
+
+            static_assert(rcoro::var_name<X>(0) == "b");
+            THROWS("out of range", rcoro::var_name<X>(1));
+
+            static_assert(rcoro::yield_vars<X, 0>.empty());
+            static_assert(rcoro::yield_vars<X, 1> == std::array{0});
+            static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0>);
+            static_assert( rcoro::var_lifetime_overlaps_yield_const<X, 0, 1>);
+            static_assert(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
+            static_assert( rcoro::var_lifetime_overlaps_yield<X>(0, 1));
+        }
+
+        { // Layout sanity tests.
+            auto x = RCORO({
+                {
+                    RC_VAR(a, 0LL); (void)a;
+                }
+
+                RC_VAR(b, short{}); (void)b;
+
+                {
+                    RC_VAR(c, 0LL); (void)c;
+                }
+
+                RC_VAR(d, char{}); (void)d;
+
+                RC_YIELD();
+
+                RC_VAR(e, 0LL); (void)e;
+            });
+            using X = decltype(x);
+
+            static_assert(rcoro::frame_size<X> == sizeof(int));
+            static_assert(rcoro::frame_alignment<X> == alignof(short));
+            static_assert(rcoro::num_vars<X> == 2);
+            static_assert(rcoro::var_offset<X, 0> == 0);
+            static_assert(rcoro::var_offset<X, 1> == 2);
+        }
+    }
+
     { // A simple coroutine.
         auto x = RCORO({
             {
@@ -608,10 +697,10 @@ int main()
         THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(rcoro::num_vars<X>, 0));
         THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, -1));
         THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, rcoro::num_yields<X>));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0) && !rcoro::var_lifetime_overlaps_yield<X>(1, 0) && !rcoro::var_lifetime_overlaps_yield<X>(2, 0) && !rcoro::var_lifetime_overlaps_yield<X>(3, 0));
-        ASSERT( rcoro::var_lifetime_overlaps_yield<X>(0, 1) && !rcoro::var_lifetime_overlaps_yield<X>(1, 1) && !rcoro::var_lifetime_overlaps_yield<X>(2, 1) && !rcoro::var_lifetime_overlaps_yield<X>(3, 1));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 2) && !rcoro::var_lifetime_overlaps_yield<X>(3, 2));
-        ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 3) && !rcoro::var_lifetime_overlaps_yield<X>(2, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(3, 3));
+        static_assert(!rcoro::var_lifetime_overlaps_yield<X>(0, 0) && !rcoro::var_lifetime_overlaps_yield<X>(1, 0) && !rcoro::var_lifetime_overlaps_yield<X>(2, 0) && !rcoro::var_lifetime_overlaps_yield<X>(3, 0));
+        static_assert( rcoro::var_lifetime_overlaps_yield<X>(0, 1) && !rcoro::var_lifetime_overlaps_yield<X>(1, 1) && !rcoro::var_lifetime_overlaps_yield<X>(2, 1) && !rcoro::var_lifetime_overlaps_yield<X>(3, 1));
+        static_assert(!rcoro::var_lifetime_overlaps_yield<X>(0, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 2) &&  rcoro::var_lifetime_overlaps_yield<X>(2, 2) && !rcoro::var_lifetime_overlaps_yield<X>(3, 2));
+        static_assert(!rcoro::var_lifetime_overlaps_yield<X>(0, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(1, 3) && !rcoro::var_lifetime_overlaps_yield<X>(2, 3) &&  rcoro::var_lifetime_overlaps_yield<X>(3, 3));
 
         Expect ex(R"(
             A<int>::A(10)                # `a` created and destroyed immediately.

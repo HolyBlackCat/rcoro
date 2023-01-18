@@ -1100,7 +1100,7 @@ namespace rcoro
 
     // Same as `var_lifetime_overlaps_yield_const`, but for non-const indices. Throws if anything is out of range.
     template <specific_coro_type T>
-    [[nodiscard]] bool var_lifetime_overlaps_yield(int var_index, int yield_index)
+    [[nodiscard]] constexpr bool var_lifetime_overlaps_yield(int var_index, int yield_index)
     {
         if (var_index < 0 || var_index >= num_vars<T>)
             throw std::runtime_error("Coroutine variable index is out of range.");

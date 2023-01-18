@@ -292,13 +292,14 @@ namespace rcoro
         struct RawVarUsedReader
         {
             RCORO_TEMPLATE_FRIEND(
-            friend constexpr bool _adl_detail_rcoro_var_used(RawVarUsedReader<T, N>);
+            // Changing the return type to `bool` makes GCC spit unsilenceable 'inline function used but never defined' for unused variables. Most interesting.
+            friend constexpr auto _adl_detail_rcoro_var_used(RawVarUsedReader<T, N>);
             )
         };
         template <typename T, int N>
         struct RawVarUsedWriter
         {
-            friend constexpr bool _adl_detail_rcoro_var_used(RawVarUsedReader<T, N>) {return true;}
+            friend constexpr auto _adl_detail_rcoro_var_used(RawVarUsedReader<T, N>) {return true;}
         };
         constexpr void _adl_detail_rcoro_var_used() {} // Dummy ADL target.
         template <typename T, int N, typename = void>

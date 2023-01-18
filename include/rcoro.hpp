@@ -320,9 +320,9 @@ namespace rcoro
         }(std::make_integer_sequence<int, NumVarsWithUnused<T>::value>{})> {};
         // Sparse to dense variable indices. Dense indices ignore unused variables.
         template <typename T>
-        constexpr int pack_var_index(int value)
+        constexpr int pack_var_index(int var_index)
         {
-            RCORO_ASSERT(value >= 0 && value < NumVarsWithUnused<T>::value);
+            RCORO_ASSERT(var_index >= 0 && var_index < NumVarsWithUnused<T>::value);
             if constexpr (NumVarsWithUnused<T>::value == 0)
             {
                 return 0;
@@ -333,16 +333,16 @@ namespace rcoro
                     int i = 0;
                     return std::array{(RawVarUsed<T, I>::value ? i++ : -1)...};
                 }(std::make_integer_sequence<int, NumVarsWithUnused<T>::value>{});
-                int ret = mapping[value];
+                int ret = mapping[var_index];
                 RCORO_ASSERT(ret >= 0 && "Internal error: this variable is unused, it doesn't have a packed index.");
                 return ret;
             }
         }
         // Dense to sparse variable indices.
         template <typename T>
-        constexpr int unpack_var_index(int value)
+        constexpr int unpack_var_index(int var_index)
         {
-            RCORO_ASSERT(value >= 0 && value < NumVarsDense<T>::value);
+            RCORO_ASSERT(var_index >= 0 && var_index < NumVarsDense<T>::value);
             if constexpr (NumVarsDense<T>::value == 0)
             {
                 return 0;
@@ -355,7 +355,7 @@ namespace rcoro
                     ((RawVarUsed<T, I>::value ? void(ret[i++] = I) : void()), ...);
                     return ret;
                 }(std::make_integer_sequence<int, NumVarsWithUnused<T>::value>{});
-                return mapping[value];
+                return mapping[var_index];
             }
         }
 

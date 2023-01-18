@@ -2162,7 +2162,7 @@ namespace rcoro
 #define DETAIL_RCORO_VAR_GUARD(ident, rawvarindex, name) \
     ::rcoro::detail::RawVarGuard<_rcoro_frame_t, rawvarindex> SF_CAT(_rcoro_var_guard_, name)(_rcoro_jump_to == 0 || _rcoro_frame.template raw_var_exists<rawvarindex>() ? &_rcoro_frame : nullptr, SF_CAT(_rcoro_fallback_storage_, ident).ptr())
 #define DETAIL_RCORO_VAR_REF(ident, rawvarindex, name) \
-    auto &RCORO_RESTRICT name = _rcoro_frame.template raw_var_or_bad_ref<rawvarindex>(_rcoro_jump_to == 0, SF_CAT(_rcoro_fallback_storage_, ident).ptr())
+    auto &name = _rcoro_frame.template raw_var_or_bad_ref<rawvarindex>(_rcoro_jump_to == 0, SF_CAT(_rcoro_fallback_storage_, ident).ptr())
 #define DETAIL_RCORO_VAR_META(rawvarindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
     (void)::rcoro::detail::RawVarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, rawvarindex, ::std::array<bool, rawvarindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{};

@@ -368,6 +368,7 @@ int main()
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
     //   * `.var` and `.var_exists` should disambiguate variable names based on yield index.
     //   * Overaligned heap allocation?
+    //   * `__restrict` per variable (unsure how helpful this is in the first place; note that the guards and `::new` would have to honor it).
 
     // Make sure our macros prefix everything with `::`.
     [[maybe_unused]] int std, rcoro, detail;

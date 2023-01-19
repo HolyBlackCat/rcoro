@@ -365,7 +365,7 @@ struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__ * 2) Overaligned {};
 
 int main()
 {
-    // * Permit conversions: view -> (any, any_noncopyable); any -> any_noncopyable
+    // * Inspect assembly, see how to optimize it. Try to make `with_const_index_helper` a lambda again, it appears in the assembly.
 
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.

@@ -161,6 +161,8 @@ auto x = RCORO((int x)
 {
     while (true)
         RC_YIELD(x * 10);
+
+    return 0; // Unreachable, but some compilers warn otherwise.
 });
 
 std::cout << x(1) << '\n'; // 10

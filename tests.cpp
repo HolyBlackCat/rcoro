@@ -3097,6 +3097,8 @@ R"(yield_point = 3, `h`
             {
                 RC_FOR((i, 1);; i++)
                     RC_YIELD(i);
+
+                return 0;
             });
             ASSERT(x(0,0) == 1);
 
@@ -3196,6 +3198,8 @@ R"(yield_point = 3, `h`
 
                 RC_FOR((i, 1);; i++)
                     RC_YIELD(i);
+
+                return 0;
             });
             ASSERT(x(0,0) == 1);
 

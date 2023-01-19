@@ -365,6 +365,7 @@ struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__ * 2) Overaligned {};
 
 int main()
 {
+    // * Fix clang-cl builds somehow?
     // * Inspect assembly, see how to optimize it. Try to make `with_const_index_helper` a lambda again, it appears in the assembly.
 
     // * Possible improvements:

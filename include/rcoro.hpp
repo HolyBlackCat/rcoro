@@ -218,9 +218,11 @@ namespace rcoro
         };
 
         // Get the template parameter of a `specific_coro<T>`.
-        template <typename T> struct GetMarkerHelper {};
-        template <typename T> struct GetMarkerHelper<specific_coro<T>> {using type = typename T::_rcoro_marker_t;};
-        template <typename T> using GetMarker = typename GetMarkerHelper<T>::type;
+        template <typename T> struct GetTypesHelper {};
+        template <typename T> struct GetTypesHelper<specific_coro<T>> {using type = T;};
+        template <typename T> using GetTypes = typename GetTypesHelper<T>::type;
+        // Get the marker type of a `specific_coro<T>`.
+        template <typename T> using GetMarker = typename GetTypes<T>::_rcoro_marker_t;
 
         // Wraps a value into a type.
         template <auto N>
@@ -919,6 +921,14 @@ namespace rcoro
             return ret;
         }();
 
+        // Getting the return type from a member pointer type.
+        template <typename T> struct MemPtrReturns {};
+        // No non-const specializations, why would one use `mutable`?
+        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P...     ) const         > {using type = R;};
+        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P...     ) const noexcept> {using type = R;};
+        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P..., ...) const         > {using type = R;};
+        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P..., ...) const noexcept> {using type = R;};
+
         // Getting the type name as string:
         template <typename T>
         constexpr std::string_view raw_type_name()
@@ -963,6 +973,11 @@ namespace rcoro
     // Whether `T` is a `specific_coro<??>`.
     template <typename T>
     concept specific_coro_type = requires{typename detail::GetMarker<T>;};
+
+
+    // The return/yield type of a coroutine, or void if none.
+    template <specific_coro_type T>
+    using return_type = typename detail::MemPtrReturns<decltype(&detail::GetTypes<T>::_rcoro_lambda_t::template operator()<::rcoro::detail::Frame<false, detail::GetMarker<T>>>)>::type;
 
 
     // Examining variables:
@@ -1284,26 +1299,26 @@ namespace rcoro
 
         // Manipulating the coroutine:
 
-        // Returns true if the coroutine can be called with arguments `P...`.
-        template <typename ...P>
-        static constexpr bool callable_with_args = std::is_invocable_v<typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>;
+        // Returns true if the coroutine can be called with arguments `P...`, returning a type convertible to `R`.
+        // If `R` is void, accepts any return type.
+        template <typename R, typename ...P>
+        static constexpr bool callable_as = std::is_invocable_r_v<R, typename T::_rcoro_lambda_t, typename T::_rcoro_frame_t &, int, P...>;
 
         // Runs a single step of the coroutine.
         // Returns `*this`. Note that the return value is convertible to bool, returning `!finished()`.
         // Throws if `can_resume() == false`.
-        template <typename ...P> requires callable_with_args<P...>
-        constexpr specific_coro &operator()(P &&... params) &
+        template <typename ...P> requires callable_as<void, P...>
+        constexpr return_type<specific_coro> operator()(P &&... params)
         {
             if (!this->can_resume())
                 throw std::runtime_error("This coroutine can't be resumed. It's either finished or busy.");
 
             frame.state = detail::State::running;
 
-            bool had_exception = true;
             struct Guard
             {
                 specific_coro &self;
-                bool &had_exception;
+                bool had_exception = true;
                 constexpr ~Guard()
                 {
                     if (had_exception)
@@ -1312,32 +1327,36 @@ namespace rcoro
                         self.frame.pos = 0;
                     }
                 }
+                void finish()
+                {
+                    had_exception = false;
+
+                    if (self.frame.state == detail::State::running)
+                    {
+                        self.frame.state = detail::State::success;
+                        self.frame.pos = 0;
+                    }
+                    else
+                    {
+                        self.frame.state = detail::State::not_finished;
+                    }
+                }
             };
-            Guard guard{*this, had_exception};
+            Guard guard{.self = *this};
 
-            int jump_to = frame.pos;
-
-            // This trick forces the return type to be `void`.
-            false ? void() : typename T::_rcoro_lambda_t{}(frame, jump_to, std::forward<P>(params)...);
-
-            had_exception = false;
-
-            if (frame.state == detail::State::running)
+            if constexpr (std::is_void_v<return_type<specific_coro>>)
             {
-                frame.state = detail::State::success;
-                frame.pos = 0;
+                typename T::_rcoro_lambda_t{}(frame, int(frame.pos), std::forward<P>(params)...);
+                guard.finish();
             }
             else
             {
-                frame.state = detail::State::not_finished;
+                // We either have to rely on NRVO, or a destructor checking `std::uncaught_exceptions()`.
+                // Not sure if the latter can always be optimized away.
+                return_type<specific_coro> ret = typename T::_rcoro_lambda_t{}(frame, int(frame.pos), std::forward<P>(params)...);
+                guard.finish();
+                return ret;
             }
-            return *this;
-        }
-        template <typename ...P> requires callable_with_args<P...>
-        constexpr specific_coro &&operator()(P &&... params) &&
-        {
-            operator()(std::forward<P>(params)...);
-            return std::move(*this);
         }
 
 
@@ -1704,6 +1723,19 @@ namespace rcoro
 
     namespace type_erasure_bits
     {
+        namespace type_erasure_detail
+        {
+            template <typename T>
+            struct ValidFuncType : std::false_type {};
+            template <typename R, typename ...P> requires std::is_same_v<R, std::remove_cvref_t<R>>
+            struct ValidFuncType<R(P...)> : std::true_type {};
+        }
+
+        // Whether `T` is a valid template parameter for the type-erased classes.
+        template <typename T>
+        concept func_type = type_erasure_detail::ValidFuncType<T>::value;
+
+
         struct basic_vtable
         {
             detail::State (*internal_state)(const void *) = nullptr;
@@ -1723,23 +1755,30 @@ namespace rcoro
         constexpr Vtable vtable_storage = []{Vtable ret; ret.template fill<T>(); return ret;}();
 
 
-        template <typename ...P>
+        template <typename R, typename ...P>
         struct basic_interface_vtable : basic_vtable
         {
-            void (*invoke)(void *, P &&...) = nullptr;
+            R (*invoke)(void *, P &&...) = nullptr;
 
             template <typename T>
             constexpr void fill()
             {
                 basic_vtable::fill<T>();
-                invoke = [](void *c, P &&... params){static_cast<T *>(c)->operator()(std::forward<P>(params)...);};
+                invoke = [](void *c, P &&... params) -> R
+                {
+                    // The branch allows us to reject the return value if it's not needed.
+                    if constexpr (std::is_void_v<R>)
+                        (void)static_cast<T *>(c)->operator()(std::forward<P>(params)...);
+                    else
+                        return static_cast<T *>(c)->operator()(std::forward<P>(params)...);
+                };
             }
         };
 
-        template <typename Derived, typename Vtable, typename ...P>
+        template <typename Derived, typename Vtable, typename R, typename ...P>
         class basic_interface
             // Not passing `Derived` directly here, because then it needs to `friend` the `BasicStateInterface`, which is annoying.
-            : public detail::BasicStateInterface<basic_interface<Derived, Vtable, P...>>
+            : public detail::BasicStateInterface<basic_interface<Derived, Vtable, R, P...>>
         {
           protected:
             const Vtable *basic_interface_vptr() const {return static_cast<const Derived *>(this)->_basic_interface_vptr();}
@@ -1764,29 +1803,22 @@ namespace rcoro
             }
             Derived &&rewind() && {return std::move(rewind());}
             // Throws if null.
-            Derived &operator()(P ...params) &
+            R operator()(P ...params)
             {
                 if (!basic_interface_vptr())
                     throw std::runtime_error("Can't call a null coroutine.");
-                basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
-                return static_cast<Derived &>(*this);
-            }
-            Derived &&operator()(P ...params) &&
-            {
-                if (!basic_interface_vptr())
-                    throw std::runtime_error("Can't call a null coroutine.");
-                basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
-                return std::move(static_cast<Derived &>(*this));
+                return basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
             }
         };
 
 
-        template <typename ...P> using basic_view_vtable = basic_interface_vtable<P...>;
+        template <typename R, typename ...P>
+        using basic_view_vtable = basic_interface_vtable<R, P...>;
 
-        template <typename Derived, typename Vtable, typename ...P>
-        class basic_view : public basic_interface<Derived, Vtable, P...>
+        template <typename Derived, typename Vtable, typename R, typename ...P>
+        class basic_view : public basic_interface<Derived, Vtable, R, P...>
         {
-            using base = basic_interface<Derived, Vtable, P...>;
+            using base = basic_interface<Derived, Vtable, R, P...>;
 
           public:
             const Vtable *vptr = nullptr;
@@ -1801,15 +1833,15 @@ namespace rcoro
             constexpr basic_view() noexcept {}
             constexpr basic_view(std::nullptr_t) noexcept {}
 
-            template <specific_coro_type T> requires T::template callable_with_args<P...>
+            template <specific_coro_type T> requires T::template callable_as<R, P...>
             constexpr basic_view(T &coro) : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
-            template <specific_coro_type T> requires T::template callable_with_args<P...>
+            template <specific_coro_type T> requires T::template callable_as<R, P...>
             constexpr basic_view(T &&coro) : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
         };
 
 
-        template <typename ...P>
-        struct basic_any_noncopyable_vtable : basic_interface_vtable<P...>
+        template <typename R, typename ...P>
+        struct basic_any_noncopyable_vtable : basic_interface_vtable<R, P...>
         {
             // Can't seem to put this directly into the `basic_any_noncopyable`.
             template <typename T>
@@ -1820,7 +1852,7 @@ namespace rcoro
             template <typename T>
             constexpr void fill()
             {
-                basic_interface_vtable<P...>::template fill<T>();
+                basic_interface_vtable<R, P...>::template fill<T>();
                 destroy_at = [](void *c) noexcept
                 {
                     std::destroy_at(static_cast<T *>(c));
@@ -1828,10 +1860,10 @@ namespace rcoro
             }
         };
 
-        template <typename Derived, typename Vtable, typename ...P>
-        class basic_any_noncopyable : public basic_interface<Derived, Vtable, P...>
+        template <typename Derived, typename Vtable, typename R, typename ...P>
+        class basic_any_noncopyable : public basic_interface<Derived, Vtable, R, P...>
         {
-            using base = basic_interface<Derived, Vtable, P...>;
+            using base = basic_interface<Derived, Vtable, R, P...>;
 
           protected:
             const Vtable *vptr = nullptr;
@@ -1851,7 +1883,7 @@ namespace rcoro
                 specific_coro_type<std::remove_cvref_t<T>>
                 && std::is_constructible_v<std::remove_cvref_t<T>, T &&> // Can copy/move into the wrapper.
                 && Vtable::template constructor_param_allowed<T>
-                && std::remove_cvref_t<T>::template callable_with_args<P...>
+                && std::remove_cvref_t<T>::template callable_as<R, P...>
             constexpr basic_any_noncopyable(T &&coro)
             {
                 using type = std::remove_cvref_t<T>;
@@ -1915,8 +1947,8 @@ namespace rcoro
             };
         }
 
-        template <typename ...P>
-        struct basic_any_vtable : basic_any_noncopyable_vtable<P...>
+        template <typename R, typename ...P>
+        struct basic_any_vtable : basic_any_noncopyable_vtable<R, P...>
         {
             // `basic_any_noncopyable` uses this.
             template <typename T>
@@ -1927,7 +1959,7 @@ namespace rcoro
             template <typename T>
             constexpr void fill()
             {
-                basic_any_noncopyable_vtable<P...>::template fill<T>();
+                basic_any_noncopyable_vtable<R, P...>::template fill<T>();
                 copy_construct = [](const void *c)
                 {
                     type_erasure_detail::MemoryGuard guard;
@@ -1939,10 +1971,10 @@ namespace rcoro
             }
         };
 
-        template <typename Derived, typename Vtable, typename ...P>
-        class basic_any : public basic_any_noncopyable<Derived, Vtable, P...>
+        template <typename Derived, typename Vtable, typename R, typename ...P>
+        class basic_any : public basic_any_noncopyable<Derived, Vtable, R, P...>
         {
-            using base = basic_any_noncopyable<Derived, Vtable, P...>;
+            using base = basic_any_noncopyable<Derived, Vtable, R, P...>;
 
           public:
             using base::base;
@@ -1964,18 +1996,24 @@ namespace rcoro
         };
     }
 
-    template <typename ...P>
-    class view : public type_erasure_bits::basic_view<view<P...>, type_erasure_bits::basic_view_vtable<P...>, P...>
+    // A type-erased coroutine pointer.
+    template <type_erasure_bits::func_type T>
+    class view;
+    template <typename R, typename ...P>
+    class view<R(P...)> : public type_erasure_bits::basic_view<view<R(P...)>, type_erasure_bits::basic_view_vtable<R, P...>, R, P...>
     {
       public:
-        using type_erasure_bits::basic_view<view<P...>, type_erasure_bits::basic_view_vtable<P...>, P...>::basic_view;
+        using type_erasure_bits::basic_view<view<R(P...)>, type_erasure_bits::basic_view_vtable<R, P...>, R, P...>::basic_view;
     };
 
-    template <typename ...P>
-    class any_noncopyable : public type_erasure_bits::basic_any_noncopyable<any_noncopyable<P...>, type_erasure_bits::basic_any_noncopyable_vtable<P...>, P...>
+    // A type-erased coroutine storage, not copyable.
+    template <type_erasure_bits::func_type T>
+    class any_noncopyable;
+    template <typename R, typename ...P>
+    class any_noncopyable<R(P...)> : public type_erasure_bits::basic_any_noncopyable<any_noncopyable<R(P...)>, type_erasure_bits::basic_any_noncopyable_vtable<R, P...>, R, P...>
     {
       public:
-        using type_erasure_bits::basic_any_noncopyable<any_noncopyable<P...>, type_erasure_bits::basic_any_noncopyable_vtable<P...>, P...>::basic_any_noncopyable;
+        using type_erasure_bits::basic_any_noncopyable<any_noncopyable<R(P...)>, type_erasure_bits::basic_any_noncopyable_vtable<R, P...>, R, P...>::basic_any_noncopyable;
 
         // Unsure why this is needed, but without this, we get `copy_assignable == true`, then a hard compilation error when trying to copy.
         any_noncopyable(const any_noncopyable &) = delete;
@@ -1984,11 +2022,14 @@ namespace rcoro
         any_noncopyable &operator=(any_noncopyable &&) = default;
     };
 
-    template <typename ...P>
-    class any : public type_erasure_bits::basic_any<any<P...>, type_erasure_bits::basic_any_vtable<P...>, P...>
+    // A type-erased coroutine storage, copyable.
+    template <type_erasure_bits::func_type T>
+    class any;
+    template <typename R, typename ...P>
+    class any<R(P...)> : public type_erasure_bits::basic_any<any<R(P...)>, type_erasure_bits::basic_any_vtable<R, P...>, R, P...>
     {
       public:
-        using type_erasure_bits::basic_any<any<P...>, type_erasure_bits::basic_any_vtable<P...>, P...>::basic_any;
+        using type_erasure_bits::basic_any<any<R(P...)>, type_erasure_bits::basic_any_vtable<R, P...>, R, P...>::basic_any;
 
         any(const any &) = default;
         any(any &&) = default;
@@ -1998,8 +2039,10 @@ namespace rcoro
     };
 }
 
-// Pause a coroutine. `ident` is a unique identifier for this yield point.
-#define RC_YIELD(name) )(yield,name)(code,
+// Pause a coroutine. Optionally return a value `...`.
+#define RC_YIELD(...) RC_YIELD_NAMED("", __VA_ARGS__)
+// Same, but the pause point is named. `name` is a string literal or `rcoro::const_string`.
+#define RC_YIELD_NAMED(name, ...) )(yield,name,__VA_ARGS__)(code,
 // Declare a coroutine-friendly variable.
 // Usage: `RC_VAR(name, init);`. The type is deduced from the initializer.
 // Can't be used inside of a `for` header, `if` header, etc. We have helpers for that, see below.
@@ -2032,9 +2075,12 @@ namespace rcoro
         { \
             RCORO_ASSUME(_rcoro_jump_to >= 0 && _rcoro_jump_to < _rcoro_Marker::_rcoro_yields::size); \
             using _rcoro_frame_t [[maybe_unused]] = ::std::remove_cvref_t<decltype(*(&_rcoro_frame + 0))>; /* Need some redundant operations to remove `restrict`. */\
+            /* Generate the final label. It can't be at the bottom, because that stops you from defining unwrapped variables after the last label. */\
+            /* It would be better to not generate the final goto in the first place, but it's harder to write the macros for that. */\
+            SF_FOR_EACH(SF_NULL, DETAIL_RCORO_LOOP_STEP, DETAIL_RCORO_CODEGEN_LOOP_LASTLABEL, DETAIL_RCORO_LOOP_INIT_STATE, (code,__VA_ARGS__)) \
             if (_rcoro_jump_to != 0) \
                 goto _rcoro_label_i; \
-            SF_FOR_EACH(DETAIL_RCORO_CODEGEN_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, DETAIL_RCORO_CODEGEN_LOOP_FINAL, DETAIL_RCORO_LOOP_INIT_STATE, (firstcode,__VA_ARGS__)) \
+            SF_FOR_EACH(DETAIL_RCORO_CODEGEN_LOOP_BODY, DETAIL_RCORO_LOOP_STEP, SF_NULL, DETAIL_RCORO_LOOP_INIT_STATE, (firstcode,__VA_ARGS__)) \
         }; \
         /* The first pass instantiation, to calculate the stack frame layout. */\
         /* It also duplicates all of our warnings. */\
@@ -2166,7 +2212,7 @@ namespace rcoro
 #define DETAIL_RCORO_VAR_META(rawvarindex, markers) \
     /* Analyze lifetime overlap with other variables. */\
     (void)::rcoro::detail::RawVarVarReachWriter<_rcoro_frame_t::fake, _rcoro_Marker, rawvarindex, ::std::array<bool, rawvarindex>{DETAIL_RCORO_EXPAND_MARKERS markers}>{};
-#define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, name) \
+#define DETAIL_RCORO_CODEGEN_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, name, ...) \
     do \
     { \
         /* Analyze lifetime overlap with other variables. */\
@@ -2175,7 +2221,7 @@ namespace rcoro
         _rcoro_frame.pos = yieldindex; \
         /* Pause. */\
         _rcoro_frame.state = ::rcoro::detail::State::pausing; \
-        return; \
+        return __VA_ARGS__; \
       SF_CAT(_rcoro_label_, ident): \
         if (_rcoro_jump_to != 0) \
         { \
@@ -2188,9 +2234,10 @@ namespace rcoro
         } \
     } \
     while (false)
+
 // The code inserted after the loop.
-#define DETAIL_RCORO_CODEGEN_LOOP_FINAL(n, d) DETAIL_RCORO_CALL(DETAIL_RCORO_CODEGEN_LOOP_FINAL_, DETAIL_RCORO_IDENTITY d)
-#define DETAIL_RCORO_CODEGEN_LOOP_FINAL_(ident, yieldindex, rawvarindex, markers) SF_CAT(_rcoro_label_, ident): ;
+#define DETAIL_RCORO_CODEGEN_LOOP_LASTLABEL(n, d) DETAIL_RCORO_CALL(DETAIL_RCORO_CODEGEN_LOOP_LASTLABEL_, DETAIL_RCORO_IDENTITY d)
+#define DETAIL_RCORO_CODEGEN_LOOP_LASTLABEL_(ident, yieldindex, rawvarindex, markers) SF_CAT(_rcoro_label_, ident): ;
 
 // The loop body to generate helper variables to analyze which variables are visible from which yield points.
 #define DETAIL_RCORO_MARKERVARS_LOOP_BODY(n, d, kind, ...) DETAIL_RCORO_CALL(SF_CAT(DETAIL_RCORO_MARKERVARS_LOOP_BODY_, kind), DETAIL_RCORO_IDENTITY d, __VA_ARGS__)
@@ -2211,6 +2258,6 @@ namespace rcoro
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY_code(ident, yieldindex, rawvarindex, markers, ...)
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY_var(ident, yieldindex, rawvarindex, markers, ...)
 #define DETAIL_RCORO_YIELDDESC_LOOP_BODY_withvar(ident, yieldindex, rawvarindex, markers, ...)
-#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, name) , ::rcoro::detail::ValueTag<::rcoro::const_string("" name "")>
+#define DETAIL_RCORO_YIELDDESC_LOOP_BODY_yield(ident, yieldindex, rawvarindex, markers, name, ...) , ::rcoro::detail::ValueTag<::rcoro::const_string(name)>
 
 #endif

@@ -387,6 +387,7 @@ int main()
             using X = decltype(x);
             static_assert(rcoro::frame_size<X> == 0);
             static_assert(rcoro::frame_alignment<X> == 1);
+            static_assert(std::is_void_v<rcoro::return_type<X>>);
             static_assert(rcoro::num_vars<X> == 0);
             THROWS("unknown", rcoro::var_index<X>("?"));
             THROWS("out of range", rcoro::var_name<X>(0));
@@ -407,10 +408,11 @@ int main()
         }
 
         { // Single yield point.
-            auto x = RCORO(RC_YIELD("y"););
+            auto x = RCORO(RC_YIELD_NAMED("y"););
             using X = decltype(x);
             static_assert(rcoro::frame_size<X> == 0);
             static_assert(rcoro::frame_alignment<X> == 1);
+            static_assert(std::is_void_v<rcoro::return_type<X>>);
             static_assert(rcoro::num_vars<X> == 0);
             THROWS("unknown", rcoro::var_index<X>("?"));
             THROWS("out of range", rcoro::var_name<X>(0));
@@ -439,6 +441,7 @@ int main()
             { // Single unnamed yield point.
                 auto x = RCORO(RC_YIELD(););
                 using X = decltype(x);
+                static_assert(std::is_void_v<rcoro::return_type<X>>);
                 static_assert(rcoro::num_yields<X> == 2);
                 static_assert(rcoro::yield_name<X>(0) == "");
                 static_assert(rcoro::yield_name<X>(1) == "");
@@ -460,6 +463,7 @@ int main()
             using X = decltype(x);
             static_assert(rcoro::frame_size<X> == 0);
             static_assert(rcoro::frame_alignment<X> == 1);
+            static_assert(std::is_void_v<rcoro::return_type<X>>);
             static_assert(rcoro::num_vars<X> == 0);
             THROWS("unknown", rcoro::var_index<X>("a"));
             static_assert(rcoro::var_index_or_negative<X>("a") == rcoro::unknown_name);
@@ -479,6 +483,7 @@ int main()
             using X = decltype(x);
             static_assert(rcoro::frame_size<X> == sizeof(int));
             static_assert(rcoro::frame_alignment<X> == alignof(int));
+            static_assert(std::is_void_v<rcoro::return_type<X>>);
             static_assert(rcoro::num_vars<X> == 1);
             static_assert(rcoro::var_index<X>("a") == 0);
             THROWS("unknown", rcoro::var_index<X>("?"));
@@ -655,7 +660,7 @@ int main()
             {
                 RC_VAR(b, A(20)); // 0
                 (void)b;
-                RC_YIELD("f");
+                RC_YIELD_NAMED("f");
             }
 
             RC_FOR((c, A(char{})); char(c) < 3; c = char(char(c)+1)) // 1
@@ -663,19 +668,23 @@ int main()
                 RC_WITH_VAR(d,A(short(30))) // 2
                 {
                     (void)d;
-                    RC_YIELD("g");
+                    RC_YIELD_NAMED("g");
                 }
 
                 RC_VAR(e, A(40)); // 3
                 (void)e;
-                RC_YIELD("h");
+                RC_YIELD_NAMED("h");
             }
 
-            RC_YIELD("i");
+            RC_YIELD_NAMED("i");
+
+            // Make sure we can have unwrapped variables after the last yield.
+            int last = 42; (void)last;
         });
         using X = decltype(x);
         static_assert(rcoro::frame_size<X> == sizeof(int) * 2);
         static_assert(rcoro::frame_alignment<X> == alignof(int));
+        static_assert(std::is_void_v<rcoro::return_type<X>>);
         static_assert(rcoro::num_vars<X> == 4);
         THROWS("unknown", rcoro::var_index<X>("a")); // `a` is unused, and is skipped.
         static_assert(rcoro::var_name<X>(0) == "b");
@@ -743,13 +752,16 @@ int main()
 
         std::string state_dump;
 
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == ""  && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">());
+        x();
         *test_detail::a_log += "...\n";
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && x());
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 1 && x.yield_point_name() == "f" &&  x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">());
+        x();
         *test_detail::a_log += "...\n";
         for (int i = 0; i < 3; i++)
         {
-            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">() && x());
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "g" && !x.var_exists<"b">() &&  x.var_exists<"c">() &&  x.var_exists<"d">() && !x.var_exists<"e">());
+            x();
             *test_detail::a_log += "...\n";
 
             if (i == 1)
@@ -759,10 +771,12 @@ int main()
                 state_dump = ss.str();
             }
 
-            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">() && x());
+            ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 3 && x.yield_point_name() == "h" && !x.var_exists<"b">() &&  x.var_exists<"c">() && !x.var_exists<"d">() &&  x.var_exists<"e">());
+            x();
             *test_detail::a_log += "...\n";
         }
-        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 4 && x.yield_point_name() == "i" && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">() && !x());
+        ASSERT(x && !x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 4 && x.yield_point_name() == "i" && !x.var_exists<"b">() && !x.var_exists<"c">() && !x.var_exists<"d">() && !x.var_exists<"e">());
+        x();
         ASSERT(!x && x.finished() && !x.busy() && x.finish_reason() == rcoro::finish_reason::success);
 
         { // Debug info text.
@@ -830,16 +844,19 @@ R"(yield_point = 3, `h`
         { // Stateless.
             auto x = RCORO({
                 RC_YIELD();
-                RC_YIELD("y");
+                RC_YIELD_NAMED("y");
             });
             ASSERT(!x.busy() && !x.finished() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == "");
-            x()();
+            x();
+            x();
             ASSERT(!x.busy() && !x.finished() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 2 && x.yield_point_name() == "y");
             x.reset();
             ASSERT(!x.busy() &&  x.finished() && x.finish_reason() == rcoro::finish_reason::reset        && x.yield_point() == 0 && x.yield_point_name() == "");
             x.rewind();
             ASSERT(!x.busy() && !x.finished() && x.finish_reason() == rcoro::finish_reason::not_finished && x.yield_point() == 0 && x.yield_point_name() == "");
-            x()()();
+            x();
+            x();
+            x();
             ASSERT(!x.busy() &&  x.finished() && x.finish_reason() == rcoro::finish_reason::success      && x.yield_point() == 0 && x.yield_point_name() == "");
             decltype(x) y;
             ASSERT(!y.busy() &&  y.finished() && y.finish_reason() == rcoro::finish_reason::reset        && y.yield_point() == 0 && y.yield_point_name() == "");
@@ -921,6 +938,36 @@ R"(yield_point = 3, `h`
         x(1, y, 2.5f);
         y = 4;
         x(3, y, 4.5f);
+    }
+
+    { // Returning values.
+        { // Simple test.
+            auto x = RCORO({
+                RC_FOR((i, 1); i <= 3; i++)
+                    RC_YIELD(i * 10);
+                return 42;
+            });
+            static_assert(std::is_same_v<rcoro::return_type<decltype(x)>, int>);
+            ASSERT(x() == 10);
+            ASSERT(x() == 20);
+            ASSERT(x() == 30);
+            ASSERT(x() == 42);
+            ASSERT(x.finished() && !x);
+        }
+
+        { // C-style variadic.
+            auto x = RCORO((int, ...){
+                RC_FOR((i, 1); i <= 3; i++)
+                    RC_YIELD(i * 10);
+                return 42;
+            });
+            static_assert(std::is_same_v<rcoro::return_type<decltype(x)>, int>);
+            ASSERT(x(1,2,3) == 10);
+            ASSERT(x(1,2,3) == 20);
+            ASSERT(x(1,2,3) == 30);
+            ASSERT(x(1,2,3) == 42);
+            ASSERT(x.finished() && !x);
+        }
     }
 
     { // Constexpr-ness.
@@ -1007,10 +1054,10 @@ R"(yield_point = 3, `h`
                     RC_YIELD();
                 }));
                 f = 3;
-                while (y(g)) RC_YIELD();
+                while (y(g), y) RC_YIELD();
                 y.rewind();
                 f = 4;
-                while (y(g)) RC_YIELD();
+                while (y(g), y) RC_YIELD();
             });
 
             int f = 0, g = 0;
@@ -1239,7 +1286,8 @@ R"(yield_point = 3, `h`
               case kind::start:
                 break;
               case kind::yield:
-                source()();
+                source();
+                source();
                 break;
               case kind::exception:
                 should_throw = true;
@@ -1266,7 +1314,9 @@ R"(yield_point = 3, `h`
                       case kind::start:
                         break;
                       case kind::yield:
-                        target()()();
+                        target();
+                        target();
+                        target();
                         break;
                       case kind::exception:
                         should_throw = true;
@@ -1543,7 +1593,7 @@ R"(yield_point = 3, `h`
             func(0);
             RC_VAR(a, int(42));
             (void)a;
-            RC_YIELD("y");
+            RC_YIELD_NAMED("y");
             func(1);
         });
         func = [&x](int yield_point)
@@ -1558,7 +1608,8 @@ R"(yield_point = 3, `h`
             THROWS("busy", x.rewind());
             THROWS("busy", x.for_each_alive_var([](auto){return false;}));
         };
-        x()();
+        x();
+        x();
     }
 
     { // Variable access.
@@ -1826,7 +1877,9 @@ R"(yield_point = 3, `h`
             ASSERT(result == 420);
 
             { // The same thing again, but make sure that we can load the variables before calling `load_raw_bytes`.
-                x.rewind()(result)(result);
+                x.rewind();
+                x(result);
+                x(result);
                 int value = 43;
                 std::memcpy((char *)x.frame_storage() + rcoro::var_offset<decltype(x), 1>, &value, sizeof(int));
                 ASSERT(x.load_raw_bytes(rcoro::finish_reason::not_finished, 2, []{return true;}));
@@ -2492,47 +2545,99 @@ R"(yield_point = 3, `h`
 
     { // Type erasure.
         { // `view`.
-            auto x = RCORO((int a, int &b, int &&c)
-            {
-                b = a + c;
-            });
+            { // Basic test.
+                static_assert(std::is_copy_constructible_v<rcoro::view<void()>> && std::is_copy_assignable_v<rcoro::view<void()>>);
+                static_assert(std::is_nothrow_copy_constructible_v<rcoro::view<void()>> && std::is_nothrow_copy_assignable_v<rcoro::view<void()>>);
+                static_assert(std::is_move_constructible_v<rcoro::view<void()>> && std::is_move_assignable_v<rcoro::view<void()>>);
+                static_assert(std::is_nothrow_move_constructible_v<rcoro::view<void()>> && std::is_nothrow_move_assignable_v<rcoro::view<void()>>);
 
-            rcoro::view<int, int &, int &&> y = x;
-            y = std::move(x); // Test that rvalues work too.
+                auto x = RCORO((int a, int &b, int &&c)
+                {
+                    b = a + c;
+                });
 
-            static_assert(std::is_same_v<decltype(          y .reset()), decltype(y) & >);
-            static_assert(std::is_same_v<decltype(std::move(y).reset()), decltype(y) &&>);
-            static_assert(std::is_same_v<decltype(          y .rewind()), decltype(y) & >);
-            static_assert(std::is_same_v<decltype(std::move(y).rewind()), decltype(y) &&>);
-            static_assert(std::is_same_v<decltype(          y (1, std::declval<int &>(), 2)), decltype(y) & >);
-            static_assert(std::is_same_v<decltype(std::move(y)(1, std::declval<int &>(), 2)), decltype(y) &&>);
+                rcoro::view<void(int, int &, int &&)> y = x;
+                y = std::move(x); // Test that rvalues work too.
 
-            ASSERT(y && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
-            int result = 0;
-            ASSERT(!y(2, result, 3));
-            ASSERT(result == 5);
-            ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::success);
+                static_assert(std::is_same_v<decltype(          y .reset()), decltype(y) & >);
+                static_assert(std::is_same_v<decltype(std::move(y).reset()), decltype(y) &&>);
+                static_assert(std::is_same_v<decltype(          y .rewind()), decltype(y) & >);
+                static_assert(std::is_same_v<decltype(std::move(y).rewind()), decltype(y) &&>);
+                static_assert(std::is_same_v<decltype(          y (1, std::declval<int &>(), 2)), void>);
+                static_assert(std::is_same_v<decltype(std::move(y)(1, std::declval<int &>(), 2)), void>);
 
-            y.rewind();
-            ASSERT(y && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+                ASSERT(y && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
+                int result = 0;
+                y(2, result, 3);
+                ASSERT(!y);
+                ASSERT(result == 5);
+                ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::success);
 
-            y.reset();
-            ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::reset);
+                y.rewind();
+                ASSERT(y && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
 
-            y = nullptr;
-            ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
-            y.reset(); // Allowed.
-            std::move(y).reset(); // Allowed.
-            THROWS("null", y.rewind());
-            THROWS("null", std::move(y).rewind());
-            THROWS("null", y(2, result, 3));
-            THROWS("null", std::move(y)(2, result, 3));
+                y.reset();
+                ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::reset);
+
+                y = nullptr;
+                ASSERT(!y && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
+                y.reset(); // Allowed.
+                std::move(y).reset(); // Allowed.
+                THROWS("null", y.rewind());
+                THROWS("null", std::move(y).rewind());
+                THROWS("null", y(2, result, 3));
+                THROWS("null", std::move(y)(2, result, 3));
+            }
+
+            { // SFINAE on the constructor.
+                // Reject construction from an unrelated type.
+                static_assert(!std::is_constructible_v<rcoro::view<void()>, int>);
+
+                auto x = RCORO((int));
+
+                // Reject construction on parameter mismatch.
+                static_assert(!std::is_constructible_v<rcoro::view<void()>, decltype(x)>);
+
+                // Reject construction on return type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::view<std::string()>, decltype(x)>);
+
+                // Allow conversions in the return type.
+                static_assert(!std::is_constructible_v<rcoro::view<float()>, decltype(x)>);
+
+                // Allow discarding the return value.
+                static_assert(!std::is_constructible_v<rcoro::view<void()>, decltype(x)>);
+            }
+
+            { // Returning a value.
+                auto x = RCORO({
+                    RC_FOR((i, 1); i <= 3; i++)
+                        RC_YIELD(i * 10);
+                    return 42;
+                });
+                rcoro::view<int()> y = x;
+                ASSERT(y() == 10);
+                ASSERT(y() == 20);
+                ASSERT(y() == 30);
+                ASSERT(y() == 42);
+                ASSERT(y.finished());
+
+                ASSERT(x.finished());
+                x.rewind();
+
+                // Discarding the result.
+                rcoro::view<void()> z = x;
+                z();
+                z();
+                z();
+                z();
+                ASSERT(z.finished());
+            }
         }
 
         { // `any_noncopyable`.
-            static_assert(!std::is_copy_constructible_v<rcoro::any_noncopyable<>> && !std::is_copy_assignable_v<rcoro::any_noncopyable<>>);
-            static_assert(std::is_move_constructible_v<rcoro::any_noncopyable<>> && std::is_move_assignable_v<rcoro::any_noncopyable<>>);
-            static_assert(std::is_nothrow_move_constructible_v<rcoro::any_noncopyable<>> && std::is_nothrow_move_assignable_v<rcoro::any_noncopyable<>>);
+            static_assert(!std::is_copy_constructible_v<rcoro::any_noncopyable<void()>> && !std::is_copy_assignable_v<rcoro::any_noncopyable<void()>>);
+            static_assert(std::is_move_constructible_v<rcoro::any_noncopyable<void()>> && std::is_move_assignable_v<rcoro::any_noncopyable<void()>>);
+            static_assert(std::is_nothrow_move_constructible_v<rcoro::any_noncopyable<void()>> && std::is_nothrow_move_assignable_v<rcoro::any_noncopyable<void()>>);
 
             { // Basic test.
                 Expect ex(R"(
@@ -2568,10 +2673,11 @@ R"(yield_point = 3, `h`
                     }
                 });
 
-                x()();
+                x();
+                x();
 
                 *test_detail::a_log += "... wrap\n";
-                rcoro::any_noncopyable<int *> y = x;
+                rcoro::any_noncopyable<void(int *)> y = x;
                 ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
                 *test_detail::a_log += "... call wrapper\n";
                 int result = 0;
@@ -2587,7 +2693,7 @@ R"(yield_point = 3, `h`
             }
 
             { // Null wrapper.
-                rcoro::any_noncopyable<> z;
+                rcoro::any_noncopyable<void()> z;
                 ASSERT(!z && !z.busy() && z.finished() && z.finish_reason() == rcoro::finish_reason::null);
                 z.reset(); // No-op.
                 std::move(z).reset(); // No-op.
@@ -2596,6 +2702,28 @@ R"(yield_point = 3, `h`
                 THROWS("null", std::move(z).rewind());
                 THROWS("null", z());
                 THROWS("null", std::move(z)());
+            }
+
+            { // Returning a value.
+                auto x = RCORO({
+                    RC_FOR((i, 1); i <= 3; i++)
+                        RC_YIELD(i * 10);
+                    return 42;
+                });
+                rcoro::any_noncopyable<int()> y = x;
+                ASSERT(y() == 10);
+                ASSERT(y() == 20);
+                ASSERT(y() == 30);
+                ASSERT(y() == 42);
+                ASSERT(y.finished());
+
+                // Discarding the result.
+                rcoro::any_noncopyable<void()> z = x;
+                z();
+                z();
+                z();
+                z();
+                ASSERT(z.finished());
             }
 
             { // Rule of five.
@@ -2629,9 +2757,9 @@ R"(yield_point = 3, `h`
 
                 x(10);
                 *test_detail::a_log += "... wrap\n";
-                rcoro::any_noncopyable<int> y = x;
+                rcoro::any_noncopyable<void(int)> y = x;
                 *test_detail::a_log += "... move ctor\n";
-                rcoro::any_noncopyable<int> z = std::move(y);
+                rcoro::any_noncopyable<void(int)> z = std::move(y);
                 *test_detail::a_log += "... prepare\n";
                 y = x;
                 y(20);
@@ -2643,11 +2771,21 @@ R"(yield_point = 3, `h`
 
             { // SFINAE on the constructor.
                 // Reject construction from an unrelated type.
-                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, int>);
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<void()>, int>);
+
+                auto x = RCORO((int));
 
                 // Reject construction on parameter mismatch.
-                auto x = RCORO((int));
-                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, decltype(x)>);
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(x)>);
+
+                // Reject construction on return type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<std::string()>, decltype(x)>);
+
+                // Allow conversions in the return type.
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<float()>, decltype(x)>);
+
+                // Allow discarding the return value.
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(x)>);
             }
 
             { // Exception recovery.
@@ -2676,7 +2814,7 @@ R"(yield_point = 3, `h`
                     *test_detail::a_log += "... wrap\n";
 
                     BLOCK_THROWS("B!",
-                        rcoro::any_noncopyable<> y = std::move(x);
+                        rcoro::any_noncopyable<void()> y = std::move(x);
                     );
 
                     *test_detail::a_log += "... done\n";
@@ -2685,10 +2823,10 @@ R"(yield_point = 3, `h`
         }
 
         { // `any`.
-            static_assert(std::is_copy_constructible_v<rcoro::any<>> && std::is_copy_assignable_v<rcoro::any<>>);
-            static_assert(!std::is_nothrow_copy_constructible_v<rcoro::any<>> && !std::is_nothrow_copy_assignable_v<rcoro::any<>>);
-            static_assert(std::is_move_constructible_v<rcoro::any<>> && std::is_move_assignable_v<rcoro::any<>>);
-            static_assert(std::is_nothrow_move_constructible_v<rcoro::any<>> && std::is_nothrow_move_assignable_v<rcoro::any<>>);
+            static_assert(std::is_copy_constructible_v<rcoro::any<void()>> && std::is_copy_assignable_v<rcoro::any<void()>>);
+            static_assert(!std::is_nothrow_copy_constructible_v<rcoro::any<void()>> && !std::is_nothrow_copy_assignable_v<rcoro::any<void()>>);
+            static_assert(std::is_move_constructible_v<rcoro::any<void()>> && std::is_move_assignable_v<rcoro::any<void()>>);
+            static_assert(std::is_nothrow_move_constructible_v<rcoro::any<void()>> && std::is_nothrow_move_assignable_v<rcoro::any<void()>>);
 
             { // Basic test.
                 Expect ex(R"(
@@ -2727,13 +2865,14 @@ R"(yield_point = 3, `h`
                     }
                 });
 
-                x()();
+                x();
+                x();
 
                 *test_detail::a_log += "... wrap\n";
-                rcoro::any<int *> y = x;
+                rcoro::any<void(int *)> y = x;
                 ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
                 *test_detail::a_log += "... copy wrapper\n";
-                rcoro::any<int *> z = y;
+                rcoro::any<void(int *)> z = y;
                 ASSERT(y && !y.busy() && !y.finished() && y.finish_reason() == rcoro::finish_reason::not_finished);
                 *test_detail::a_log += "... call wrapper\n";
                 int result = 0;
@@ -2749,8 +2888,8 @@ R"(yield_point = 3, `h`
             }
 
             { // Null wrapper.
-                rcoro::any<> y;
-                rcoro::any<> z = y; // Copying null must be a no-op.
+                rcoro::any<void()> y;
+                rcoro::any<void()> z = y; // Copying null must be a no-op.
                 y = z; // This is also a no-op.
                 ASSERT(!y && !y.busy() && y.finished() && y.finish_reason() == rcoro::finish_reason::null);
                 y.reset(); // No-op.
@@ -2760,6 +2899,28 @@ R"(yield_point = 3, `h`
                 THROWS("null", std::move(y).rewind());
                 THROWS("null", y());
                 THROWS("null", std::move(y)());
+            }
+
+            { // Returning a value.
+                auto x = RCORO({
+                    RC_FOR((i, 1); i <= 3; i++)
+                        RC_YIELD(i * 10);
+                    return 42;
+                });
+                rcoro::any<int()> y = x;
+                ASSERT(y() == 10);
+                ASSERT(y() == 20);
+                ASSERT(y() == 30);
+                ASSERT(y() == 42);
+                ASSERT(y.finished());
+
+                // Discarding the result.
+                rcoro::any<void()> z = x;
+                z();
+                z();
+                z();
+                z();
+                ASSERT(z.finished());
             }
 
             { // Rule of five.
@@ -2804,9 +2965,9 @@ R"(yield_point = 3, `h`
 
                 x(10);
                 *test_detail::a_log += "... wrap\n";
-                rcoro::any<int> y = x;
+                rcoro::any<void(int)> y = x;
                 *test_detail::a_log += "... move ctor\n";
-                rcoro::any<int> z = std::move(y);
+                rcoro::any<void(int)> z = std::move(y);
                 *test_detail::a_log += "... prepare\n";
                 y = x;
                 y(20);
@@ -2819,22 +2980,32 @@ R"(yield_point = 3, `h`
                 *test_detail::a_log += "... copy assign\n";
                 y = z;
                 *test_detail::a_log += "... copy ctor\n";
-                rcoro::any<int> w(y);
+                rcoro::any<void(int)> w(y);
                 *test_detail::a_log += "... done\n";
             }
 
             { // SFINAE on the constructor.
                 // Reject construction from an unrelated type.
-                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, int>);
+                static_assert(!std::is_constructible_v<rcoro::any<void()>, int>);
+
+                auto x = RCORO((int));\
 
                 // Reject construction on parameter mismatch.
-                auto x = RCORO((int));
-                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<>, decltype(x)>);
+                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(x)>);
+
+                // Reject construction on return type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::any<std::string()>, decltype(x)>);
+
+                // Allow conversions in the return type.
+                static_assert(!std::is_constructible_v<rcoro::any<float()>, decltype(x)>);
+
+                // Allow discarding the return value.
+                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(x)>);
 
                 // Reject non-copyable coroutine.
                 auto y = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a; RC_YIELD(););
-                static_assert(!std::is_constructible_v<rcoro::any<>, decltype(y)>);
-                static_assert(std::is_constructible_v<rcoro::any_noncopyable<>, decltype(y)>);
+                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(y)>);
+                static_assert(std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(y)>);
             }
 
             { // Exception recovery.
@@ -2863,7 +3034,7 @@ R"(yield_point = 3, `h`
                     *test_detail::a_log += "... wrap\n";
 
                     BLOCK_THROWS("B!",
-                        rcoro::any<> y = x;
+                        rcoro::any<void()> y = x;
                     );
 
                     *test_detail::a_log += "... done\n";
@@ -2897,11 +3068,11 @@ R"(yield_point = 3, `h`
                     x();
 
                     *test_detail::a_log += "... wrap\n";
-                    rcoro::any<> y = std::move(x);
+                    rcoro::any<void()> y = std::move(x);
 
                     *test_detail::a_log += "... copy\n";
                     BLOCK_THROWS("B!",
-                        rcoro::any<> z = y;
+                        rcoro::any<void()> z = y;
                     );
 
                     *test_detail::a_log += "... done\n";

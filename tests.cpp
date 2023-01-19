@@ -361,8 +361,12 @@ class Expect
     }
 };
 
+struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__ * 2) Overaligned {};
+
 int main()
 {
+    // * Permit conversions: view -> (any, any_noncopyable); any -> any_noncopyable
+
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
@@ -2781,6 +2785,10 @@ R"(yield_point = 3, `h`
                 // Reject construction on return type mismatch.
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<std::string()>, decltype(x)>);
 
+                // Reject overaligned types.
+                auto y = RCORO({RC_VAR(a, Overaligned{}); (void)a; RC_YIELD();});
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(y)>);
+
                 // Allow conversions in the return type.
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<float()>, decltype(x)>);
 
@@ -2996,6 +3004,10 @@ R"(yield_point = 3, `h`
                 // Reject construction on return type mismatch.
                 static_assert(!std::is_constructible_v<rcoro::any<std::string()>, decltype(x)>);
 
+                // Reject overaligned types.
+                auto y = RCORO({RC_VAR(a, Overaligned{}); (void)a; RC_YIELD();});
+                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(y)>);
+
                 // Allow conversions in the return type.
                 static_assert(!std::is_constructible_v<rcoro::any<float()>, decltype(x)>);
 
@@ -3003,9 +3015,9 @@ R"(yield_point = 3, `h`
                 static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(x)>);
 
                 // Reject non-copyable coroutine.
-                auto y = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a; RC_YIELD(););
-                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(y)>);
-                static_assert(std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(y)>);
+                auto z = RCORO(RC_VAR(a, B<int, ops::move_ctor | ops::move_assign | ops::copy_assign>(42)); (void)a; RC_YIELD(););
+                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(z)>);
+                static_assert(std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(z)>);
             }
 
             { // Exception recovery.

@@ -1884,10 +1884,10 @@ namespace rcoro
                 && std::is_constructible_v<std::remove_cvref_t<T>, T &&> // Can copy/move into the wrapper.
                 && Vtable::template constructor_param_allowed<T>
                 && std::remove_cvref_t<T>::template callable_as<R, P...>
+                && (alignof(std::remove_cvref_t<T>) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__)
             constexpr basic_any_noncopyable(T &&coro)
             {
                 using type = std::remove_cvref_t<T>;
-                static_assert(alignof(type) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__, "Overaligned types are not supported.");
 
                 vptr = &vtable_storage<type, Vtable>;
                 memory = operator new(sizeof(type));

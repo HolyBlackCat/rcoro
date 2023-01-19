@@ -123,7 +123,7 @@ while (c)
 ```
 
 Under the hood, `RC_FOR((i, 0); i < 3; i++) {...}` expands to:
-```
+```cpp
 RC_WITH_VAR(i, 0)
 for (; i < 3; i++)
 {...}
@@ -132,35 +132,55 @@ for (; i < 3; i++)
 
 ### Generating values
 
-There's no syntax specifically for yielding a value. (I'm open to suggestions!)
+You can return values from a coroutine:
 
-But there is a slightly more general syntax for passing parameters into the coroutine, which lets you achieve the same thing:
 ```cpp
-auto c = RCORO((int &result)
-{
-    RC_FOR((i, 1); i <= 3; i++)
-    {
-        result = i * 10;
-        RC_YIELD();
-    }
+auto x = RCORO({
+    RC_YIELD(1);
+    RC_YIELD(2);
+    return 3;
 });
 
-for (int result{}; c(result);)
-    std::cout << result << '\n'; // 10, 20, 30
+std::cout << x() << '\n'; // 1
+std::cout << x() << '\n'; // 2
+std::cout << x() << '\n'; // 3
 ```
 
-Unlike C++20 coroutines, the arguments must be passed to every call, not only to the initial one.
+The type is deduced automatically. The type must be the same in every `RC_YIELD` and `return`, otherwise you get a compilation error.
+
+Coroutines always returns by value.
+
+### Passing parameters
+
+You can pass parameters to coroutines.
+
+Unlike C++20 coroutines, the arguments must be passed to every call:
+
+```cpp
+auto x = RCORO((int x)
+{
+    while (true)
+        RC_YIELD(x * 10);
+});
+
+std::cout << x(1) << '\n'; // 10
+std::cout << x(2) << '\n'; // 20
+std::cout << x(3) << '\n'; // 30
+```
 
 ### Passing coroutines to functions
 
-There is `rcoro::view<>`, which is like `std::string_view` for coroutines.
+There is `rcoro::view<...>`, which is similar to `std::function<...>`, but merely stores a pointer to a coroutine, rather than owning a copy. Think `std::string_view` for coroutines.
 
 Example:
 ```cpp
-void run(rcoro::view<> c)
+void run(rcoro::view<void()> c)
 {
-    while (c())
+    while (c)
+    {
+        c();
         std::cout << "...";
+    }
 }
 
 int main()
@@ -177,38 +197,14 @@ int main()
 }
 ```
 
-Parameter types, if any, must be specified in `<...>`:
-```cpp
-void run(rcoro::view<int &> c)
-{
-    int result{};
-    while (c(result))
-        std::cout << result << ';';
-}
-
-int main()
-{
-    auto c = RCORO((int &result)
-    {
-        result = 1;
-        RC_YIELD();
-        result = 2;
-        RC_YIELD();
-        result = 3;
-        RC_YIELD();
-    });
-
-    run(c); // 1;2;3;
-}
-```
 Like `std::function`, `rcoro::view` is flexible in the parameter type handling. E.g. `rcoro::view<std::string>` can accept a coroutine taking `std::string_view`, and so on.
 
 ### Returning coroutines from functions and passing them around
 
-There is `rcoro::any<>`, which is like `std::function` for coroutines.
+There is `rcoro::any<...>`, which is exactly like `std::function` for coroutines. Unlike `rcoro::view`, it owns a copy of the coroutine.
 
 ```cpp
-rcoro::any<> foo()
+rcoro::any<void()> foo()
 {
     return RCORO({
         std::cout << "Hello\n";
@@ -219,7 +215,7 @@ rcoro::any<> foo()
 
 int main()
 {
-    auto c = foo();
+    rcoro::any<void()> c = foo();
     c(); // Hello
     c(); // world!
 }

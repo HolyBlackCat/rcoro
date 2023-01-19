@@ -3091,6 +3091,133 @@ R"(yield_point = 3, `h`
                 }
             }
         }
+
+        { // `any[_noncopyable]` -> `view`.
+            auto x = RCORO((short, short)
+            {
+                RC_FOR((i, 1);; i++)
+                    RC_YIELD(i);
+            });
+            ASSERT(x(0,0) == 1);
+
+            { // From `any_noncopyable`.
+                static_assert(std::is_constructible_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &>);
+                static_assert(std::is_constructible_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &&>);
+                static_assert(std::is_nothrow_constructible_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &>);
+                static_assert(std::is_nothrow_constructible_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &&>);
+                static_assert(std::is_assignable_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &>);
+                static_assert(std::is_assignable_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &&>);
+                static_assert(std::is_nothrow_assignable_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &>);
+                static_assert(std::is_nothrow_assignable_v<rcoro::view<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &&>);
+                // Reject const arguments.
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any_noncopyable<int(short, short)> &>);
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any_noncopyable<int(short, short)> &&>);
+                // Slight parameter type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any_noncopyable<int(short, int)> &>);
+                // Slight return type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any_noncopyable<float(short, short)> &>);
+                // Reverse construction.
+                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<int(short, short)>, const rcoro::view<int(short, short)> &>);
+
+                rcoro::any_noncopyable<int(short, short)> a = x;
+                ASSERT(a(0,0) == 2);
+                rcoro::view<int(short, short)> b = a;
+                ASSERT(b(0,0) == 3);
+                ASSERT(b(0,0) == 4);
+                ASSERT(a(0,0) == 5);
+                b = a;
+                ASSERT(b(0,0) == 6);
+                ASSERT(a(0,0) == 7);
+            }
+
+            { // From `any`.
+                static_assert(std::is_constructible_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &>);
+                static_assert(std::is_constructible_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &&>);
+                static_assert(std::is_nothrow_constructible_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &>);
+                static_assert(std::is_nothrow_constructible_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &&>);
+                static_assert(std::is_assignable_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &>);
+                static_assert(std::is_assignable_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &&>);
+                static_assert(std::is_nothrow_assignable_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &>);
+                static_assert(std::is_nothrow_assignable_v<rcoro::view<int(short, short)>, rcoro::any<int(short, short)> &&>);
+                // Reject const arguments.
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any<int(short, short)> &>);
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any<int(short, short)> &&>);
+                // Slight parameter type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any<int(short, int)> &>);
+                // Slight return type mismatch.
+                static_assert(!std::is_constructible_v<rcoro::view<int(short, short)>, const rcoro::any<float(short, short)> &>);
+                // Reverse construction.
+                static_assert(!std::is_constructible_v<rcoro::any<int(short, short)>, const rcoro::view<int(short, short)> &>);
+
+                rcoro::any<int(short, short)> a = x;
+                ASSERT(a(0,0) == 2);
+                rcoro::view<int(short, short)> b = a;
+                ASSERT(b(0,0) == 3);
+                ASSERT(b(0,0) == 4);
+                ASSERT(a(0,0) == 5);
+                b = a;
+                ASSERT(b(0,0) == 6);
+                ASSERT(a(0,0) == 7);
+            }
+        }
+
+        { // `any` -> `any_noncopyable`.
+            static_assert(std::is_constructible_v<rcoro::any_noncopyable<int(short, short)>, rcoro::any<int(short, short)> &&>);
+            static_assert(std::is_assignable_v<rcoro::any_noncopyable<int(short, short)>, rcoro::any<int(short, short)> &&>);
+            static_assert(std::is_nothrow_constructible_v<rcoro::any_noncopyable<int(short, short)>, rcoro::any<int(short, short)> &&>);
+            static_assert(std::is_nothrow_assignable_v<rcoro::any_noncopyable<int(short, short)>, rcoro::any<int(short, short)> &&>);
+            // Reject non-move construction.
+            static_assert(!std::is_constructible_v<rcoro::any_noncopyable<int(short, short)>, rcoro::any<int(short, short)> &>);
+            static_assert(!std::is_constructible_v<rcoro::any_noncopyable<int(short, short)>, const rcoro::any<int(short, short)> &>);
+            static_assert(!std::is_constructible_v<rcoro::any_noncopyable<int(short, short)>, const rcoro::any<int(short, short)> &&>);
+            // Reject reverse construction.
+            static_assert(!std::is_constructible_v<rcoro::any<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &&>);
+            static_assert(!std::is_assignable_v<rcoro::any<int(short, short)>, rcoro::any_noncopyable<int(short, short)> &&>);
+
+            Expect ex(R"(
+                A<int>::A(1)
+                ... wrap
+                A<int>::A(const A & = 1)
+                ... convert
+                # Nothing happens here, the move is silent.
+                ... wrap again
+                A<int>::A(const A & = 1)
+                ... convert by assignment
+                A<int>::~A(1) # The target dies.
+                # Nothing else happens here, the move is silent.
+                ... done
+                A<int>::~A(1)
+                A<int>::~A(1)
+            )");
+
+            auto x = RCORO((short, short)
+            {
+                RC_VAR(a, A(1)); (void)a;
+
+                RC_FOR((i, 1);; i++)
+                    RC_YIELD(i);
+            });
+            ASSERT(x(0,0) == 1);
+
+            *test_detail::a_log += "... wrap\n";
+            rcoro::any<int(short, short)> a = x;
+            ASSERT(a(0,0) == 2);
+
+            *test_detail::a_log += "... convert\n";
+            rcoro::any_noncopyable<int(short, short)> b = std::move(a);
+            ASSERT(b(0,0) == 3);
+            ASSERT(a.finished());
+
+            *test_detail::a_log += "... wrap again\n";
+            a = x;
+            ASSERT(a(0,0) == 2);
+            *test_detail::a_log += "... convert by assignment\n";
+            b = std::move(a);
+            ASSERT(b(0,0) == 3);
+            ASSERT(a.finished());
+
+            *test_detail::a_log += "... done\n";
+        }
     }
 
     std::cout << "OK\n";

@@ -1729,6 +1729,14 @@ namespace rcoro
             struct ValidFuncType : std::false_type {};
             template <typename R, typename ...P> requires std::is_same_v<R, std::remove_cvref_t<R>>
             struct ValidFuncType<R(P...)> : std::true_type {};
+
+            struct BasicInterfaceFriend
+            {
+                template <typename T>
+                static auto *target(T &&value) {return value.basic_interface_target();}
+                template <typename T>
+                static auto *vptr(T &&value) {return value.basic_interface_vptr();}
+            };
         }
 
         // Whether `T` is a valid template parameter for the type-erased classes.
@@ -1780,6 +1788,7 @@ namespace rcoro
             // Not passing `Derived` directly here, because then it needs to `friend` the `BasicStateInterface`, which is annoying.
             : public detail::BasicStateInterface<basic_interface<Derived, Vtable, R, P...>>
         {
+            friend type_erasure_detail::BasicInterfaceFriend;
           protected:
             const Vtable *basic_interface_vptr() const {return static_cast<const Derived *>(this)->_basic_interface_vptr();}
                   void *basic_interface_target()       {return static_cast<      Derived *>(this)->_basic_interface_target();}
@@ -1833,12 +1842,41 @@ namespace rcoro
             constexpr basic_view() noexcept {}
             constexpr basic_view(std::nullptr_t) noexcept {}
 
+            // Construct from a true coroutine.
             template <specific_coro_type T> requires T::template callable_as<R, P...>
-            constexpr basic_view(T &coro) : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
+            constexpr basic_view(T &coro) noexcept : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
             template <specific_coro_type T> requires T::template callable_as<R, P...>
-            constexpr basic_view(T &&coro) : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
+            constexpr basic_view(T &&coro) noexcept : vptr(&vtable_storage<T, Vtable>), target(&coro) {}
+
+            // Construct from anything that looks like a coroutine.
+            template <typename Derived2, typename Vtable2, typename R2, typename ...P2>
+            requires std::is_convertible_v<Vtable2 *, Vtable *>
+            constexpr basic_view(basic_interface<Derived2, Vtable2, R2, P2...> &source) noexcept
+                : vptr(type_erasure_detail::BasicInterfaceFriend::vptr(source)),
+                target(type_erasure_detail::BasicInterfaceFriend::target(source))
+            {}
+            template <typename Derived2, typename Vtable2, typename R2, typename ...P2>
+            requires std::is_convertible_v<Vtable2 *, Vtable *>
+            constexpr basic_view(basic_interface<Derived2, Vtable2, R2, P2...> &&source) noexcept
+                : vptr(type_erasure_detail::BasicInterfaceFriend::vptr(source)),
+                target(type_erasure_detail::BasicInterfaceFriend::target(source))
+            {}
         };
 
+
+        namespace type_erasure_detail
+        {
+            struct MemoryGuard
+            {
+                void *ret = nullptr;
+                bool fail = true;
+                ~MemoryGuard()
+                {
+                    if (fail)
+                        operator delete(ret);
+                }
+            };
+        }
 
         template <typename R, typename ...P>
         struct basic_any_noncopyable_vtable : basic_interface_vtable<R, P...>
@@ -1865,6 +1903,10 @@ namespace rcoro
         {
             using base = basic_interface<Derived, Vtable, R, P...>;
 
+            // Friend any version of self. The converting constructor below needs this.
+            template <typename Derived2, typename Vtable2, typename R2, typename ...P2>
+            friend class basic_any_noncopyable;
+
           protected:
             const Vtable *vptr = nullptr;
             void *memory = nullptr;
@@ -1878,6 +1920,7 @@ namespace rcoro
             constexpr basic_any_noncopyable() {}
             constexpr basic_any_noncopyable(std::nullptr_t) {}
 
+            // From a true coroutine.
             template <typename T>
             requires
                 specific_coro_type<std::remove_cvref_t<T>>
@@ -1885,26 +1928,25 @@ namespace rcoro
                 && Vtable::template constructor_param_allowed<T>
                 && std::remove_cvref_t<T>::template callable_as<R, P...>
                 && (alignof(std::remove_cvref_t<T>) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__)
-            constexpr basic_any_noncopyable(T &&coro)
+            basic_any_noncopyable(T &&coro)
             {
                 using type = std::remove_cvref_t<T>;
 
                 vptr = &vtable_storage<type, Vtable>;
-                memory = operator new(sizeof(type));
-                struct Guard
-                {
-                    basic_any_noncopyable &self;
-                    bool fail = true;
-                    ~Guard()
-                    {
-                        if (fail)
-                            operator delete(self.memory);
-                    }
-                };
-                Guard guard{.self = *this};
-                std::construct_at(reinterpret_cast<type *>(memory), std::forward<T>(coro));
+                type_erasure_detail::MemoryGuard guard;
+                guard.ret = operator new(sizeof(type));
+                std::construct_at(reinterpret_cast<type *>(guard.ret), std::forward<T>(coro));
+                memory = guard.ret;
                 guard.fail = false;
             }
+
+            // From an other wrapper.
+            template <typename Derived2, typename Vtable2, typename R2, typename ...P2>
+            requires(!std::is_same_v<Derived, Derived2> && std::is_convertible_v<Vtable2 *, Vtable *>)
+            constexpr basic_any_noncopyable(basic_any_noncopyable<Derived2, Vtable2, R2, P2...> &&other) noexcept
+                : vptr(std::exchange(other.vptr, {})),
+                memory(std::exchange(other.memory, {}))
+            {}
 
             constexpr basic_any_noncopyable(basic_any_noncopyable &&other) noexcept
                 : vptr(std::exchange(other.vptr, {})), memory(std::exchange(other.memory, {}))
@@ -1932,20 +1974,6 @@ namespace rcoro
             }
         };
 
-
-        namespace type_erasure_detail
-        {
-            struct MemoryGuard
-            {
-                void *ret = nullptr;
-                bool fail = true;
-                ~MemoryGuard()
-                {
-                    if (fail)
-                        operator delete(ret);
-                }
-            };
-        }
 
         template <typename R, typename ...P>
         struct basic_any_vtable : basic_any_noncopyable_vtable<R, P...>
@@ -1976,8 +2004,25 @@ namespace rcoro
         {
             using base = basic_any_noncopyable<Derived, Vtable, R, P...>;
 
+            // Friend any version of self. The converting constructor below needs this.
+            template <typename Derived2, typename Vtable2, typename R2, typename ...P2>
+            friend class basic_any;
+
           public:
             using base::base;
+
+            // Copy from an other wrapper.
+            template <typename Derived2, typename Vtable2, typename R2, typename ...P2>
+            requires(!std::is_same_v<Derived, Derived2> && std::is_convertible_v<Vtable2 *, Vtable *>)
+            constexpr basic_any(const basic_any<Derived2, Vtable2, R2, P2...> &other)
+            {
+                // This isn't tested properly, we don't have a suitable child class to test this.
+                auto other_vptr = type_erasure_detail::BasicInterfaceFriend::vptr(other);
+                if (!other_vptr)
+                    return;
+                this->memory = other_vptr->copy_construct(type_erasure_detail::BasicInterfaceFriend::target(other));
+                this->vptr = other_vptr;
+            }
 
             constexpr basic_any(const basic_any &other) : base()
             {

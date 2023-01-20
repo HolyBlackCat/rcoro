@@ -411,7 +411,7 @@ int main()
             static_assert(rcoro::yield_index_or_negative<X>("") == 0);
             static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
             static_assert(rcoro::yield_index_const<X, ""> == 0);
-            static_assert(rcoro::yields_names_are_unique<X>);
+            static_assert(rcoro::yield_names_are_unique<X>);
             static_assert(rcoro::yield_vars<X, 0>.empty());
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
 
@@ -441,7 +441,7 @@ int main()
             static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
             static_assert(rcoro::yield_index_const<X, ""> == 0);
             static_assert(rcoro::yield_index_const<X, "y"> == 1);
-            static_assert(rcoro::yields_names_are_unique<X>);
+            static_assert(rcoro::yield_names_are_unique<X>);
             static_assert(rcoro::yield_vars<X, 0>.empty());
             static_assert(rcoro::yield_vars<X, 1>.empty());
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
@@ -462,7 +462,7 @@ int main()
                 THROWS("unknown", rcoro::yield_index<X>("?"));
                 static_assert(rcoro::yield_index_or_negative<X>("") == rcoro::ambiguous_name);
                 static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
-                static_assert(!rcoro::yields_names_are_unique<X>);
+                static_assert(!rcoro::yield_names_are_unique<X>);
                 static_assert(rcoro::yield_vars<X, 0>.empty());
                 static_assert(rcoro::yield_vars<X, 1>.empty());
                 static_assert(rcoro::var_names_are_unique_per_yield<X>);

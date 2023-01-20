@@ -1235,7 +1235,7 @@ namespace rcoro
     // The names can't be empty, because the implicit 0-th checkpoint has an empty name.
     // If there are no yields, returns true.
     template <specific_coro_type T>
-    constexpr bool yields_names_are_unique = []{
+    constexpr bool yield_names_are_unique = []{
         std::array<std::string_view, num_yields<T>> arr;
         for (int i = 0; i < num_yields<T>; i++)
             arr[i] = yield_name<T>(i);

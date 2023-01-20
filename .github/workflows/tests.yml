@@ -38,7 +38,7 @@ jobs:
     - name: Clone deps
       run: git clone https://github.com/HolyBlackCat/macro_sequence_for ../macro_sequence_for
     - name: Run tests
-      run: \
+      run: |
         make COMPILER=cl CXXFLAGS=-DSKIP_TESTS_B
         make COMPILER=cl CXXFLAGS=-DSKIP_TESTS_A
         make COMPILER=clang-cl

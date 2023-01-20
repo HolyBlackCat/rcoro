@@ -3,7 +3,7 @@
 Coroutines, reimplemented using macros.
 
 * [Stackless](https://stackoverflow.com/a/28989543/2752075)<sup>1</sup>, like C++20 coroutines.
-* Can be used [**without heap allocation**](#rcoro-1)<sup>2</sup>.
+* Can be used [**without heap allocation**](#rcoro)<sup>2</sup>. <!-- Wrong link in VSC, but correct on GitHub. -->
 * **Copyable** - a paused coroutine can be copied with all its stack variables.
 * [**Reflectable**](TODO LINK HERE) - examine values of individual variables in a paused coroutine.
 * [**Serializable**](TODO LINK HERE)<sup>3</sup> - dump coroutine state to a file or transfer it over network.
@@ -50,7 +50,9 @@ std::copy_n(fib.begin(), 5, std::ostream_iterator<int>(std::cout, "\n")); // 5 8
 
 Header-only. Just clone, add `include/` to the include path, and `#include <rcoro.hpp>`.
 
-Supported compilers are: GCC 10+, Clang 13+, and latest MSVC. Clang is recommended, as it's able to completely optimize away the coroutines in some cases.
+Supported compilers are: GCC 10+, Clang 13+, and latest MSVC.
+
+Clang seems to be able to completely optimize away the coroutines, making them zero-cost. GCC is *usually* able to do that. And MSVC isn't.
 
 Must use C++20 or newer. MSVC users must use `/Zc:preprocessor`.
 

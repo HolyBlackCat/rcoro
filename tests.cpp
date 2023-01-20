@@ -382,6 +382,8 @@ int main()
     // Make sure our macros prefix everything with `::`.
     [[maybe_unused]] int std, rcoro, detail;
 
+    #ifndef SKIP_TESTS_A // Split tests to reduce RAM usage on MSVC.
+
     { // Basic (mostly) static checks.
         { // Stuff.
             { // `finish_reason` values.
@@ -1595,6 +1597,10 @@ R"(yield_point = 3, `h`
         lambda(std::true_type{}, std::false_type{}); // Move construct.
         lambda(std::true_type{}, std::true_type{}); // Move assign.
     }
+
+    #endif
+
+    #ifndef SKIP_TESTS_B
 
     { // Busy coroutines.
         static std::function<void(int)> func;
@@ -3345,6 +3351,8 @@ R"(yield_point = 3, `h`
             test_detail::a_log = nullptr;
         }
     }
+
+    #endif
 
     std::cout << "OK\n";
 }

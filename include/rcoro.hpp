@@ -251,6 +251,28 @@ namespace rcoro
             }(std::make_integer_sequence<decltype(N), N>{});
         }
 
+        #if 1
+        // An internal helper for `with_const_index`.
+        template <auto N, typename F, decltype(N) ...I>
+        constexpr void with_const_index_low(decltype(N) i, std::integer_sequence<decltype(N), I...>, F &&func)
+        {
+            (void)((i == I ? void(std::forward<F>(func)(std::integral_constant<decltype(N), I>{})), true : false) || ...);
+        }
+
+        // Transforms a runtime index to a compile-time one. UB if out of bounds.
+        // `func` is `void func(int i)`. It's called with the current yield point index, if any.
+        template <auto N, typename F>
+        constexpr void with_const_index(decltype(N) i, F &&func)
+        {
+            if constexpr (N > 0)
+            {
+                with_const_index_low<N>(i, std::make_integer_sequence<decltype(N), N>{}, std::forward<F>(func));
+            }
+        }
+        #else
+        // An alternative implementation based on a lookup table.
+        // It severely hinders optimization on Clang 15, and seems to generate slightly more assembly on GCC.
+
         // An internal helper for `with_const_index`.
         template <auto I, typename F>
         constexpr void with_const_index_helper(F &&func) {std::forward<F>(func)(std::integral_constant<decltype(I), I>{});}
@@ -269,6 +291,7 @@ namespace rcoro
                 arr[i](std::forward<F>(func));
             }
         }
+        #endif
 
         // A type list.
         template <typename ...P>

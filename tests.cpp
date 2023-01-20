@@ -369,8 +369,7 @@ struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__ * 2) Overaligned {};
 
 int main()
 {
-    // * Fix clang-cl builds somehow?
-    // * Inspect assembly, see how to optimize it. Try to make `with_const_index_helper` a lambda again, it appears in the assembly.
+    // * Try running optimized builds on MSVC in a VM. Do they pass?
 
     // * Possible improvements:
     //   * <=> == for specific_coro and all the type-erasure wrappers.
@@ -381,8 +380,6 @@ int main()
 
     // Make sure our macros prefix everything with `::`.
     [[maybe_unused]] int std, rcoro, detail;
-
-    #ifndef SKIP_TESTS_A // Split tests to reduce RAM usage on MSVC.
 
     { // Basic (mostly) static checks.
         { // Stuff.
@@ -1597,10 +1594,6 @@ R"(yield_point = 3, `h`
         lambda(std::true_type{}, std::false_type{}); // Move construct.
         lambda(std::true_type{}, std::true_type{}); // Move assign.
     }
-
-    #endif
-
-    #ifndef SKIP_TESTS_B
 
     { // Busy coroutines.
         static std::function<void(int)> func;
@@ -3351,8 +3344,6 @@ R"(yield_point = 3, `h`
             test_detail::a_log = nullptr;
         }
     }
-
-    #endif
 
     std::cout << "OK\n";
 }

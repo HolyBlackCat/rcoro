@@ -39,7 +39,6 @@ jobs:
       run: git clone https://github.com/HolyBlackCat/macro_sequence_for ../macro_sequence_for
     - name: Run tests
       run: |
-        make COMPILER=cl CXXFLAGS=-DSKIP_TESTS_B
-        make COMPILER=cl CXXFLAGS=-DSKIP_TESTS_A
+        make COMPILER=cl OPTIMIZE='O0_sanitized O0'
         make COMPILER=clang-cl
       shell: msys2 {0}

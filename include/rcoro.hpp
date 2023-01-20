@@ -24,8 +24,10 @@
 #include <cstddef>
 #include <exception>
 #include <iosfwd>
+#include <iterator> // For category tags. :c
 #include <memory>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <string>
@@ -129,11 +131,34 @@ namespace rcoro
             typename T::_rcoro_frame_t;
             typename T::_rcoro_lambda_t;
         };
+
+        template <typename T>
+        struct ValidFuncType : std::false_type {};
+        template <typename R, typename ...P> requires std::is_same_v<R, std::remove_cvref_t<R>>
+        struct ValidFuncType<R(P...)> : std::true_type {};
     }
 
     // See below.
     template <detail::ValidCoroTypes T>
     class specific_coro;
+
+    // Whether `T` is `R(P...)`, i.e. a valid template parameter for `any<...>` or `view<...>`.
+    template <typename T>
+    concept func_type = detail::ValidFuncType<T>::value;
+
+    template <typename T>
+    concept cvref_unqualified_object_type = std::is_same_v<std::remove_cvref_t<T>, T> && std::is_object_v<T>;
+
+    // See below.
+    template <bool Copy, cvref_unqualified_object_type R>
+    class maybe_copy_iterator;
+    // The normal iterator. `*` returns `R &&`.
+    template <cvref_unqualified_object_type R>
+    using iterator = maybe_copy_iterator<false, R>;
+    // A variant of the iterator with `*` returning `const R &`.
+    template <cvref_unqualified_object_type R>
+    using copy_iterator = maybe_copy_iterator<true, R>;
+
 
     namespace detail
     {
@@ -947,10 +972,8 @@ namespace rcoro
         // Getting the return type from a member pointer type.
         template <typename T> struct MemPtrReturns {};
         // No non-const specializations, why would one use `mutable`?
-        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P...     ) const         > {using type = R;};
-        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P...     ) const noexcept> {using type = R;};
-        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P..., ...) const         > {using type = R;};
-        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P..., ...) const noexcept> {using type = R;};
+        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P...     ) const> {using type = R;};
+        template <typename R, typename C, typename ...P> struct MemPtrReturns<R (C::*)(P..., ...) const> {using type = R;};
 
         // Getting the type name as string:
         template <typename T>
@@ -1383,6 +1406,20 @@ namespace rcoro
         }
 
 
+        // Iterators.
+        // `R` overrides the return type.
+        template <cvref_unqualified_object_type R = return_type<specific_coro>>
+        iterator<R> begin() noexcept
+        {
+            return iterator<R>(*this);
+        }
+        template <cvref_unqualified_object_type R = return_type<specific_coro>>
+        iterator<R> end() noexcept
+        {
+            return iterator<R>();
+        }
+
+
         // Variable reflection:
 
         // Returns true if the variable currently exists.
@@ -1748,11 +1785,6 @@ namespace rcoro
     {
         namespace type_erasure_detail
         {
-            template <typename T>
-            struct ValidFuncType : std::false_type {};
-            template <typename R, typename ...P> requires std::is_same_v<R, std::remove_cvref_t<R>>
-            struct ValidFuncType<R(P...)> : std::true_type {};
-
             struct BasicInterfaceFriend
             {
                 template <typename T>
@@ -1761,11 +1793,6 @@ namespace rcoro
                 static auto *vptr(T &&value) {return value.basic_interface_vptr();}
             };
         }
-
-        // Whether `T` is a valid template parameter for the type-erased classes.
-        template <typename T>
-        concept func_type = type_erasure_detail::ValidFuncType<T>::value;
-
 
         struct basic_vtable
         {
@@ -1840,6 +1867,19 @@ namespace rcoro
                 if (!basic_interface_vptr())
                     throw std::runtime_error("Can't call a null coroutine.");
                 return basic_interface_vptr()->invoke(basic_interface_target(), std::forward<P>(params)...);
+            }
+
+            // Returns a null iterator if null.
+            template <cvref_unqualified_object_type R2 = R>
+            iterator<R2> begin() noexcept
+            {
+                return iterator<R2>(*this);
+            }
+            // Returns a null iterator in any case.
+            template <cvref_unqualified_object_type R2 = R>
+            iterator<R2> end() noexcept
+            {
+                return iterator<R2>();
             }
         };
 
@@ -2065,7 +2105,7 @@ namespace rcoro
     }
 
     // A type-erased coroutine pointer.
-    template <type_erasure_bits::func_type T>
+    template <func_type T>
     class view;
     template <typename R, typename ...P>
     class view<R(P...)> : public type_erasure_bits::basic_view<view<R(P...)>, type_erasure_bits::basic_view_vtable<R, P...>, R, P...>
@@ -2075,7 +2115,7 @@ namespace rcoro
     };
 
     // A type-erased coroutine storage, not copyable.
-    template <type_erasure_bits::func_type T>
+    template <func_type T>
     class any_noncopyable;
     template <typename R, typename ...P>
     class any_noncopyable<R(P...)> : public type_erasure_bits::basic_any_noncopyable<any_noncopyable<R(P...)>, type_erasure_bits::basic_any_noncopyable_vtable<R, P...>, R, P...>
@@ -2091,7 +2131,7 @@ namespace rcoro
     };
 
     // A type-erased coroutine storage, copyable.
-    template <type_erasure_bits::func_type T>
+    template <func_type T>
     class any;
     template <typename R, typename ...P>
     class any<R(P...)> : public type_erasure_bits::basic_any<any<R(P...)>, type_erasure_bits::basic_any_vtable<R, P...>, R, P...>
@@ -2104,6 +2144,98 @@ namespace rcoro
         // Unsure why this is needed, but without this, we get `nothrow_copy_assignable == true`, which is wrong.
         any &operator=(const any &) noexcept(false) = default;
         any &operator=(any &&) = default;
+    };
+
+
+    // Iterators.
+
+    // A sentiel for iterators
+    struct end_tag_t {};
+    constexpr end_tag_t end{};
+
+    // This is modelled after `std::istream_iterator`.
+    // You probably don't want to use this template directly, use `iterator` or `copy_iterator`.
+    template <bool Copy, cvref_unqualified_object_type R>
+    class maybe_copy_iterator
+    {
+        view<R()> target;
+        mutable std::optional<R> value;
+
+        // The converting constructor needs this.
+        friend maybe_copy_iterator<!Copy, R>;
+
+      public:
+        // Need all of this, because otherwise `copy_iterator` is inferred to be a forward iterator,
+        // which is wrong, because it lacks the multipass guarantee.
+        using iterator_category = std::input_iterator_tag;
+        using value_type = R;
+        using reference = std::conditional_t<Copy, const R &, R &&>;
+        using pointer = std::remove_reference_t<reference> *;
+        using difference_type = std::ptrdiff_t;
+
+        constexpr maybe_copy_iterator() {}
+        constexpr maybe_copy_iterator(view<R()> target) : target(target)
+        {
+            if (!target.finished())
+                value.emplace(target());
+        }
+
+        // From an iterator type with inverted `Copy`.
+        constexpr maybe_copy_iterator(const maybe_copy_iterator<!Copy, R> &other) : target(other.target), value(other.value) {}
+        // Not moving `target` here, because rvalue post-increment depends on it staying valid.
+        constexpr maybe_copy_iterator(maybe_copy_iterator<!Copy, R> &&other) : target(other.target), value(std::move(other.value)) {}
+
+        friend constexpr bool operator==(const maybe_copy_iterator &a, const maybe_copy_iterator &b)
+        {
+            if (a == end && b == end)
+                return true;
+            else
+                return &a == &b; // `view` doesn't have `==`, because it's unclear if it should compare just addresses or representation too.
+        }
+        // With sentiel.
+        friend constexpr bool operator==(const maybe_copy_iterator &a, end_tag_t)
+        {
+            return !a.value; // Not `a.finished()`, because that happens one element too early.
+        }
+
+        constexpr reference operator*() const
+        {
+            if (!value)
+                throw std::runtime_error("This coroutine iterator is not dereferencable.");
+
+            if constexpr (Copy)
+                return *value;
+            else
+                return std::move(*value);
+        }
+
+        constexpr maybe_copy_iterator &operator++()
+        {
+            if (!target.finished())
+            {
+                value = target();
+            }
+            else
+            {
+                if (!value)
+                    throw std::runtime_error("This coroutine iterator is not incrementable.");
+                value.reset();
+            }
+            return *this;
+        }
+
+        constexpr maybe_copy_iterator operator++(int) &
+        {
+            maybe_copy_iterator ret = *this;
+            ++*this;
+            return ret;
+        }
+        constexpr maybe_copy_iterator operator++(int) &&
+        {
+            maybe_copy_iterator ret = std::move(*this);
+            ++*this;
+            return ret;
+        }
     };
 }
 

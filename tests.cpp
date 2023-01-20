@@ -7,6 +7,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <typeindex>
@@ -260,6 +261,8 @@ class Expect
 {
     std::string log, expected_log, expected_log_raw;
 
+    std::string *prev_log = nullptr;
+
   public:
     Expect(std::string new_log)
     {
@@ -282,13 +285,14 @@ class Expect
             expected_log += '\n';
         }
 
+        prev_log = test_detail::a_log;
         test_detail::a_log = &log;
     }
     Expect(const Expect &) = delete;
     Expect &operator=(const Expect &) = delete;
     ~Expect()
     {
-        test_detail::a_log = nullptr;
+        test_detail::a_log = prev_log;
 
         // Strip comments from `log`.
         std::string stripped_log;
@@ -356,7 +360,7 @@ class Expect
             FAIL("---- Got log:\n" << log << "---- but expected log:\n" << expected_log_raw << "----");
 
         // Check for leaks.
-        if (!test_detail::a_instances.empty())
+        if (!prev_log && !test_detail::a_instances.empty())
             FAIL("Found leaks!");
     }
 };
@@ -3222,6 +3226,123 @@ R"(yield_point = 3, `h`
             ASSERT(a.finished());
 
             *test_detail::a_log += "... done\n";
+        }
+    }
+
+    { // Iterators.
+        static_assert(std::is_same_v<std::iterator_traits<rcoro::iterator<int>>::iterator_category, std::input_iterator_tag>);
+        static_assert(std::is_same_v<std::iterator_traits<rcoro::copy_iterator<int>>::iterator_category, std::input_iterator_tag>);
+        static_assert(std::input_iterator<rcoro::iterator<int>>);
+        static_assert(std::input_iterator<rcoro::copy_iterator<int>>);
+
+        auto x = RCORO({
+            RC_YIELD('a');
+            RC_YIELD('b');
+            return 'c';
+        });
+
+        { // Basic test.
+            ASSERT(std::string(x.begin(), x.end()) == "abc");
+            x.rewind();
+
+            int i = 0;
+            for (auto value : x)
+            {
+                static_assert(std::is_same_v<decltype(value), char>);
+                ASSERT(value == 'a' + i++);
+            }
+            ASSERT(i == 3);
+            x.rewind();
+        }
+
+        { // From `view`.
+            rcoro::view<char()> v = x;
+            ASSERT(std::string(v.begin(), v.end()) == "abc");
+            v.rewind();
+
+            int i = 0;
+            for (auto value : v)
+            {
+                static_assert(std::is_same_v<decltype(value), char>);
+                ASSERT(value == 'a' + i++);
+            }
+            ASSERT(i == 3);
+            v.rewind();
+        }
+
+        { // From `any_noncopyable`.
+            rcoro::any_noncopyable<char()> v = x;
+            ASSERT(std::string(v.begin(), v.end()) == "abc");
+            v.rewind();
+
+            int i = 0;
+            for (auto value : v)
+            {
+                static_assert(std::is_same_v<decltype(value), char>);
+                ASSERT(value == 'a' + i++);
+            }
+            ASSERT(i == 3);
+        }
+
+        { // From `any`.
+            rcoro::any<char()> v = x;
+            ASSERT(std::string(v.begin(), v.end()) == "abc");
+            v.rewind();
+
+            int i = 0;
+            for (auto value : v)
+            {
+                static_assert(std::is_same_v<decltype(value), char>);
+                ASSERT(value == 'a' + i++);
+            }
+            ASSERT(i == 3);
+        }
+
+        { // Exceptions.
+            rcoro::iterator<char> i;
+            THROWS("not dereferencable", *i);
+            THROWS("not incrementable", i++);
+            i = rcoro::iterator<char>(x);
+            ASSERT(*i++ == 'a');
+            ASSERT(*std::move(i)++ == 'b');
+            ASSERT(*i++ == 'c');
+            THROWS("not dereferencable", *i);
+            THROWS("not incrementable", i++);
+        }
+
+        { // Copies and moves.
+            std::string log;
+            test_detail::a_log = &log;
+
+            auto y = RCORO({
+                RC_FOR((i, 1);; i++)
+                    RC_YIELD(A(i));
+                return A(0);
+            });
+
+            auto i = y.begin();
+            static_assert(std::is_same_v<decltype(i), rcoro::iterator<A<int>>>);
+
+            {
+                Expect ex("A<int>::A(A && = 1)\nA<int>::~A(1)\n");
+                auto var = *i;
+            }
+
+            ++i;
+            rcoro::copy_iterator<A<int>> j = i;
+
+            log.clear();
+            {
+                Expect ex("A<int>::A(const A & = 2)\nA<int>::~A(2)\n");
+                auto var = *j;
+            }
+
+            ++j;
+            i = j;
+
+            i = {};
+            j = {};
+            test_detail::a_log = nullptr;
         }
     }
 

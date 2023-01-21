@@ -28,6 +28,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <string>
@@ -1149,7 +1150,21 @@ namespace rcoro
 
     // A list of variables existing at yield point `Y`, of type `std::array<int, N>`.
     template <specific_coro_type T, int Y>
-    constexpr auto yield_vars = detail::vars_reachable_from_yield<detail::GetMarker<T>, Y>();
+    constexpr auto yield_vars_const = detail::vars_reachable_from_yield<detail::GetMarker<T>, Y>();
+
+    // Same, but for a runtime index.
+    template <specific_coro_type T>
+    constexpr std::span<const int> yield_vars(int yield_index)
+    {
+        if (yield_index < 0 || yield_index >= num_yields<T>)
+            throw std::runtime_error("Coroutine yield point index is out of range.");
+        std::span<const int> ret;
+        detail::with_const_index<num_yields<T>>(yield_index, [&](auto yield_index_const)
+        {
+            ret = yield_vars_const<T, yield_index_const.value>;
+        });
+        return ret;
+    }
 
     // Whether variable `V` exists at yield point `Y`.
     template <specific_coro_type T, int V, int Y>
@@ -1299,7 +1314,7 @@ namespace rcoro
             specific_coro &co;
             bool fail = true;
             int i = 0;
-            std::array<void (*)(specific_coro &), yield_vars<specific_coro, Y>.size()> funcs{};
+            std::array<void (*)(specific_coro &), yield_vars_const<specific_coro, Y>.size()> funcs{};
             constexpr ~LoadUnorderedGuard()
             {
                 if (!fail)
@@ -1493,10 +1508,10 @@ namespace rcoro
             {
                 detail::with_const_index<num_yields<specific_coro>>(frame.pos, [&](auto yieldindex)
                 {
-                    constexpr auto num_indices = yield_vars<specific_coro, yieldindex.value>.size();
+                    constexpr auto num_indices = yield_vars_const<specific_coro, yieldindex.value>.size();
                     ret = detail::const_any_of<num_indices>([&](auto varindex)
                     {
-                        constexpr auto indices = yield_vars<specific_coro, yieldindex.value>;
+                        constexpr auto indices = yield_vars_const<specific_coro, yieldindex.value>;
                         return bool(func(std::integral_constant<int, indices[varindex.value]>{}));
                     });
                 });
@@ -1522,7 +1537,7 @@ namespace rcoro
         }
 
         // Same as `load_raw_bytes`, but compiles for any variable types (compiles even if `frame_is_trivially_copyable<Coro>` is false).
-        // Warning! If `func` returns true, it must placement-new all the `yield_vars` into the `frame_storage()`, otherwise UB ensues.
+        // Warning! If `func` returns true, it must placement-new all the `yield_vars_const` into the `frame_storage()`, otherwise UB ensues.
         // And if `func` returns false or throws, it must not leave any variables alive.
         // The recommended way of creating the variables is `::new((void *)((char *)frame_storage() + rcoro::var_offset<Coro, i>)) type(init);`.
         template <typename F>
@@ -1610,7 +1625,7 @@ namespace rcoro
                     constexpr int yield_index = yield_index_const.value;
 
                     LoadUnorderedGuard<yield_index> guard{.co = *this};
-                    std::array<bool, yield_vars<specific_coro, yield_index>.size()> vars_done{};
+                    std::array<bool, yield_vars_const<specific_coro, yield_index>.size()> vars_done{};
 
                     bool ok = std::forward<F>(func)([&](int var_index, auto &&... extra)
                     {
@@ -1618,17 +1633,17 @@ namespace rcoro
 
                         if (var_index < 0 || var_index >= num_vars<specific_coro>)
                             throw std::runtime_error("Coroutine variable index is out of range.");
-                        auto it = std::lower_bound(yield_vars<specific_coro, yield_index>.begin(), yield_vars<specific_coro, yield_index>.end(), var_index);
-                        if (it == yield_vars<specific_coro, yield_index>.end() || *it != var_index)
+                        auto it = std::lower_bound(yield_vars_const<specific_coro, yield_index>.begin(), yield_vars_const<specific_coro, yield_index>.end(), var_index);
+                        if (it == yield_vars_const<specific_coro, yield_index>.end() || *it != var_index)
                             throw std::runtime_error("This coroutine variable doesn't exist at this yield point.");
-                        auto packed_var_index = it - yield_vars<specific_coro, yield_index>.begin();
+                        auto packed_var_index = it - yield_vars_const<specific_coro, yield_index>.begin();
                         if (vars_done[packed_var_index])
                             throw std::runtime_error("This coroutine variable was already loaded.");
 
-                        detail::with_const_index<yield_vars<specific_coro, yield_index>.size()>(packed_var_index, [&](auto packed_var_index_const)
+                        detail::with_const_index<yield_vars_const<specific_coro, yield_index>.size()>(packed_var_index, [&](auto packed_var_index_const)
                         {
                             static constexpr auto var_index_const =
-                                std::integral_constant<int, yield_vars<specific_coro, yield_index_const.value>[packed_var_index_const.value]>{};
+                                std::integral_constant<int, yield_vars_const<specific_coro, yield_index_const.value>[packed_var_index_const.value]>{};
                             // This trick forces the return type to be `void`.
                             false ? void() : load_var(var_index_const, [&]<typename ...P>(P &&... params)
                             {
@@ -1643,7 +1658,7 @@ namespace rcoro
 
                     if (!ok)
                         return;
-                    if (guard.i != yield_vars<specific_coro, yield_index>.size())
+                    if (guard.i != yield_vars_const<specific_coro, yield_index>.size())
                         throw std::runtime_error("Some coroutine variables are missing.");
                     guard.fail = false;
                     ret = true;
@@ -1758,13 +1773,13 @@ namespace rcoro
                 {
                     constexpr int y = yieldindex.value;
                     s << "\n  " << y << ". `" << yield_name_const<T, y>.view() << "`";
-                    detail::const_for<yield_vars<T, y>.size()>([&](auto packed_varindex)
+                    detail::const_for<yield_vars_const<T, y>.size()>([&](auto packed_varindex)
                     {
                         if (packed_varindex.value == 0)
                             s << ", visible_vars: ";
                         else
                             s << ", ";
-                        constexpr auto varindex = yield_vars<T, yieldindex.value>[packed_varindex.value];
+                        constexpr auto varindex = yield_vars_const<T, yieldindex.value>[packed_varindex.value];
                         s << varindex << "." << var_name_const<T, varindex>.view();
                     });
                 });

@@ -409,7 +409,10 @@ int main()
             static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
             static_assert(rcoro::yield_index_const<X, ""> == 0);
             static_assert(rcoro::yield_names_are_unique<X>);
-            static_assert(rcoro::yield_vars<X, 0>.empty());
+            static_assert(rcoro::yield_vars_const<X, 0>.empty());
+            static_assert(rcoro::yield_vars<X>(0).empty());
+            THROWS("out of range", rcoro::yield_vars<X>(1));
+            THROWS("out of range", rcoro::yield_vars<X>(-1));
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
 
             static_assert(rcoro::var_names_are_unique_per_yield<X>);
@@ -439,8 +442,11 @@ int main()
             static_assert(rcoro::yield_index_const<X, ""> == 0);
             static_assert(rcoro::yield_index_const<X, "y"> == 1);
             static_assert(rcoro::yield_names_are_unique<X>);
-            static_assert(rcoro::yield_vars<X, 0>.empty());
-            static_assert(rcoro::yield_vars<X, 1>.empty());
+            static_assert(rcoro::yield_vars_const<X, 0>.empty());
+            static_assert(rcoro::yield_vars_const<X, 1>.empty());
+            static_assert(rcoro::yield_vars<X>(0).empty());
+            static_assert(rcoro::yield_vars<X>(1).empty());
+            THROWS("out of range", rcoro::yield_vars<X>(2));
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, 0));
             THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(1, 0));
 
@@ -460,8 +466,11 @@ int main()
                 static_assert(rcoro::yield_index_or_negative<X>("") == rcoro::ambiguous_name);
                 static_assert(rcoro::yield_index_or_negative<X>("?") == rcoro::unknown_name);
                 static_assert(!rcoro::yield_names_are_unique<X>);
-                static_assert(rcoro::yield_vars<X, 0>.empty());
-                static_assert(rcoro::yield_vars<X, 1>.empty());
+                static_assert(rcoro::yield_vars_const<X, 0>.empty());
+                static_assert(rcoro::yield_vars_const<X, 1>.empty());
+                static_assert(rcoro::yield_vars<X>(0).empty());
+                static_assert(rcoro::yield_vars<X>(1).empty());
+                THROWS("out of range", rcoro::yield_vars<X>(2));
                 static_assert(rcoro::var_names_are_unique_per_yield<X>);
             }
         }
@@ -477,7 +486,9 @@ int main()
             static_assert(rcoro::var_index_or_negative<X>("a") == rcoro::unknown_name);
             THROWS("out of range", rcoro::var_name<X>(0));
             static_assert(rcoro::num_yields<X> == 1);
-            static_assert(rcoro::yield_vars<X, 0>.empty());
+            static_assert(rcoro::yield_vars_const<X, 0>.empty());
+            static_assert(rcoro::yield_vars<X>(0).empty());
+            THROWS("out of range", rcoro::yield_vars<X>(1));
             THROWS("out of range", !rcoro::var_lifetime_overlaps_yield<X>(0, 0));
 
             THROWS("unknown", rcoro::var_index_at_yield<X>(0, "a"));
@@ -499,8 +510,11 @@ int main()
             static_assert(rcoro::var_index_or_negative<X>("?") == rcoro::unknown_name);
             static_assert(rcoro::var_name<X>(0) == "a");
             static_assert(rcoro::num_yields<X> == 2);
-            static_assert(rcoro::yield_vars<X, 0>.empty());
-            static_assert(rcoro::yield_vars<X, 1> == std::array{0});
+            static_assert(rcoro::yield_vars_const<X, 0>.empty());
+            static_assert(rcoro::yield_vars_const<X, 1> == std::array{0});
+            static_assert(rcoro::yield_vars<X>(0).empty());
+            static_assert(rcoro::yield_vars<X>(1).size() == 1);
+            THROWS("out of range", rcoro::yield_vars<X>(2));
             ASSERT(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
             ASSERT( rcoro::var_lifetime_overlaps_yield<X>(0, 1));
 
@@ -616,8 +630,11 @@ int main()
             static_assert(rcoro::var_name<X>(0) == "b");
             THROWS("out of range", rcoro::var_name<X>(1));
 
-            static_assert(rcoro::yield_vars<X, 0>.empty());
-            static_assert(rcoro::yield_vars<X, 1> == std::array{0});
+            static_assert(rcoro::yield_vars_const<X, 0>.empty());
+            static_assert(rcoro::yield_vars_const<X, 1> == std::array{0});
+            static_assert(rcoro::yield_vars<X>(0).empty());
+            static_assert(rcoro::yield_vars<X>(1).size() == 1);
+            THROWS("out of range", rcoro::yield_vars<X>(2));
             static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0>);
             static_assert( rcoro::var_lifetime_overlaps_yield_const<X, 0, 1>);
             static_assert(!rcoro::var_lifetime_overlaps_yield<X>(0, 0));
@@ -707,10 +724,10 @@ int main()
         static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 1> &&  rcoro::var_lifetime_overlaps_var<X, 1, 1> &&  rcoro::var_lifetime_overlaps_var<X, 2, 1> &&  rcoro::var_lifetime_overlaps_var<X, 3, 1>);
         static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 2> &&  rcoro::var_lifetime_overlaps_var<X, 1, 2> &&  rcoro::var_lifetime_overlaps_var<X, 2, 2> && !rcoro::var_lifetime_overlaps_var<X, 3, 2>);
         static_assert(!rcoro::var_lifetime_overlaps_var<X, 0, 3> &&  rcoro::var_lifetime_overlaps_var<X, 1, 3> && !rcoro::var_lifetime_overlaps_var<X, 2, 3> &&  rcoro::var_lifetime_overlaps_var<X, 3, 3>);
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 0> && rcoro::yield_vars<X, 0>.empty());
-        static_assert( rcoro::var_lifetime_overlaps_yield_const<X, 0, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 1> && rcoro::yield_vars<X, 1> == std::array{0});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 2> && rcoro::yield_vars<X, 2> == std::array{1,2});
-        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 3, 3> && rcoro::yield_vars<X, 3> == std::array{1,3});
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 0> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 0> && rcoro::yield_vars_const<X, 0>.empty()            && rcoro::yield_vars<X>(0).size() == 0);
+        static_assert( rcoro::var_lifetime_overlaps_yield_const<X, 0, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 1, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 1> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 1> && rcoro::yield_vars_const<X, 1> == std::array{0}   && rcoro::yield_vars<X>(1).size() == 1);
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 2> &&  rcoro::var_lifetime_overlaps_yield_const<X, 2, 2> && !rcoro::var_lifetime_overlaps_yield_const<X, 3, 2> && rcoro::yield_vars_const<X, 2> == std::array{1,2} && rcoro::yield_vars<X>(2).size() == 2);
+        static_assert(!rcoro::var_lifetime_overlaps_yield_const<X, 0, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 1, 3> && !rcoro::var_lifetime_overlaps_yield_const<X, 2, 3> &&  rcoro::var_lifetime_overlaps_yield_const<X, 3, 3> && rcoro::yield_vars_const<X, 3> == std::array{1,3} && rcoro::yield_vars<X>(3).size() == 2);
         THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(-1, 0));
         THROWS("variable index is out of range", rcoro::var_lifetime_overlaps_yield<X>(rcoro::num_vars<X>, 0));
         THROWS("yield point index is out of range", rcoro::var_lifetime_overlaps_yield<X>(0, -1));

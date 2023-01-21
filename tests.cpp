@@ -1916,7 +1916,7 @@ R"(yield_point = 3, `h`
             }
         }
 
-        { // `load`.
+        { // `load_ordered`.
             auto x = RCORO({
                 RC_YIELD();
 
@@ -1946,7 +1946,7 @@ R"(yield_point = 3, `h`
                 decltype(x) y(rcoro::rewind);
                 y();
 
-                THROWS("finish reason is out of range", y.load(rcoro::finish_reason(-1), 0, [](auto, auto){}));
+                THROWS("finish reason is out of range", y.load_ordered(rcoro::finish_reason(-1), 0, [](auto, auto){}));
                 ASSERT(y.finished() && y.finish_reason() == rcoro::finish_reason::reset);
             }
 
@@ -1966,7 +1966,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    ASSERT(y.load({}, 3, [](auto index, auto construct)
+                    ASSERT(y.load_ordered({}, 3, [](auto index, auto construct)
                     {
                         *test_detail::a_log += "... " + std::to_string(index.value) + '\n';
 
@@ -1990,7 +1990,7 @@ R"(yield_point = 3, `h`
                 { // At initial yield point.
                     Expect ex("");
                     decltype(x) y;
-                    ASSERT(y.load({}, 0, [](auto, auto)
+                    ASSERT(y.load_ordered({}, 0, [](auto, auto)
                     {
                         FAIL("This shouldn't be called.");
                     }));
@@ -2001,7 +2001,7 @@ R"(yield_point = 3, `h`
                 { // Finished.
                     Expect ex("");
                     decltype(x) y;
-                    y.load(rcoro::finish_reason::exception, 0, [](auto, auto)
+                    y.load_ordered(rcoro::finish_reason::exception, 0, [](auto, auto)
                     {
                         FAIL("This shouldn't be called.");
                     });
@@ -2013,7 +2013,7 @@ R"(yield_point = 3, `h`
                     auto z = RCORO(RC_YIELD(););
 
                     Expect ex("");
-                    ASSERT(z.load(rcoro::finish_reason::not_finished, 1, [](auto, auto)
+                    ASSERT(z.load_ordered(rcoro::finish_reason::not_finished, 1, [](auto, auto)
                     {
                         FAIL("This shouldn't be called.");
                     }));
@@ -2034,7 +2034,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    ASSERT(!y.load({}, 3, [](auto index, auto construct)
+                    ASSERT(!y.load_ordered({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -2059,7 +2059,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("test!", !y.load({}, 3, [](auto index, auto construct)
+                    THROWS("test!", !y.load_ordered({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -2087,7 +2087,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("test!", !y.load({}, 3, [](auto index, auto construct)
+                    THROWS("test!", !y.load_ordered({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));
@@ -2114,7 +2114,7 @@ R"(yield_point = 3, `h`
                     )");
 
                     decltype(x) y;
-                    THROWS("at most once", !y.load({}, 3, [](auto index, auto construct)
+                    THROWS("at most once", !y.load_ordered({}, 3, [](auto index, auto construct)
                     {
                         if constexpr (index.value == 1)
                             construct(short(10));

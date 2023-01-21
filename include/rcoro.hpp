@@ -1565,7 +1565,7 @@ namespace rcoro
         // If `construct` is not called, will abort the load, destroy the previously constructed variables, and return false.
         // If the function ends up throwing or returning false, the coroutine is zeroed as if by `reset()`.
         template <typename F>
-        constexpr bool load(rcoro::finish_reason fin_reason, int yield_index, F &&func)
+        constexpr bool load_ordered(rcoro::finish_reason fin_reason, int yield_index, F &&func)
         {
             return load_raw_bytes_UNSAFE(fin_reason, yield_index, [&]
             {
@@ -1578,7 +1578,7 @@ namespace rcoro
                         false ? void() : func(varindex, [&]<typename ...P>(P &&... params)
                         {
                             if (ok)
-                                throw std::runtime_error("Coroutine `load()` user callback must call the callback it receives at most once.");
+                                throw std::runtime_error("Coroutine `load_ordered()` user callback must call the callback it receives at most once.");
                             std::construct_at(frame.template var_storage<varindex.value>(), std::forward<P>(params)...);
                             completed(); // Now `handle_vars` will clean up this var too if something goes wrong.
                             ok = true;

@@ -1,0 +1,118 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+
+    // On Windows, you need MSYS2 as your integrated terminal to run those commands.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "make build-default",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+            "group": {"kind": "build", "isDefault": true},
+        },
+        {
+            "label": "Build & Run",
+            "type": "shell",
+            "command": "make",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "Run",
+            "type": "shell",
+            "command": "make sync-libs-and-assets && make run-old-default",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Debug",
+            "type": "shell",
+            "command": "make remember-mode MODE=debug",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Debug (soft)",
+            "type": "shell",
+            "command": "make remember-mode MODE=debug_soft",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Release",
+            "type": "shell",
+            "command": "make remember-mode MODE=release",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Profile",
+            "type": "shell",
+            "command": "make remember-mode MODE=profile",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Sanitize address",
+            "type": "shell",
+            "command": "make remember-mode MODE=sanitize_address",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Sanitize UB",
+            "type": "shell",
+            "command": "make remember-mode MODE=sanitize_ub",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "↪ Sanitize address & UB",
+            "type": "shell",
+            "command": "make remember-mode MODE=sanitize_address_ub",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "◙ Update Commands",
+            "type": "shell",
+            "command": "make commands",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "▶ Reset Autocompletion Cache",
+            "type": "shell",
+            "command": "rm -rf ./.cache",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "⦻ Rebuild",
+            "type": "shell",
+            "command": "make clean-this-os-this-mode && make build-default",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "⧁ Reset PCH",
+            "type": "shell",
+            "command": "make clean-pch",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "⦸ Clean (this mode)",
+            "type": "shell",
+            "command": "make clean-this-os-this-mode",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "⧮ Clean (without libraries)",
+            "type": "shell",
+            "command": "make clean",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "⧯ Clean (with libraries)",
+            "type": "shell",
+            "command": "make clean-including-libs",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+        {
+            "label": "⧉ Clean and prepare for storage",
+            "type": "shell",
+            "command": "make prepare-for-storage",
+            "presentation": {"echo": true, "reveal": "always", "focus": false, "panel": "shared", "showReuseMessage": false, "clear": true},
+        },
+    ]
+}

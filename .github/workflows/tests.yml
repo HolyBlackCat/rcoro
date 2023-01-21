@@ -39,6 +39,5 @@ jobs:
       run: git clone https://github.com/HolyBlackCat/macro_sequence_for ../macro_sequence_for
     - name: Run tests
       run: |
-        make COMPILER=cl OPTIMIZE='O0_sanitized O0'
-        make COMPILER=clang-cl
+        make COMPILER='cl clang-cl'
       shell: msys2 {0}

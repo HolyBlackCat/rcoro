@@ -3361,4 +3361,6 @@ R"(yield_point = 3, `h`
     }
 
     std::cout << "OK\n";
+
+    return 0; // MSVC doesn't add this automatically in release builds?! Scanadalous.
 }

@@ -573,17 +573,23 @@ The general algorithm is as follows:
 
     `static_assert` `frame_is_trivially_copyable<T>`, and serialize `frame_size<T>` bytes from `.frame_storage()`.
 
-A toy example is below. I wouldn't use text `std::ostream` in the real world, and would recommend binary, JSON, etc.
+Generally, if you know the storage format is stable, don't serialize variable/yield names. (E.g. when doing networking between applications known to have the exact same version.) And if the format can change, serialize the names, which will then allow you to tolerate minor coroutine changes, and/or fix the data to account for major changes.
+
+A toy example is below. I wouldn't use text `std::ostream` in the real world, and would recommend binary, JSON, etc. This does save both yield and variable names.
 
 ```cpp
 template <rcoro::specific_coro_type T>
 std::string serialize(const T &c)
 {
     std::ostringstream ss;
-    ss << int(c.finish_reason()) << '\n'; // Consider using something more clever.
+    ss << int(c.finish_reason()) << '\n';
     if (!c.finished())
     {
-        ss << c.yield_point() << '\n';
+        // Saving yield names: yes, hence assert.
+        static_assert(rcoro::yield_names_are_unique<T>);
+        // Quotes to support empty strings, since 0th name is always empty.
+        ss << std::quoted(c.yield_point_name()) << '\n';
+
         c.for_each_alive_var([&](auto i)
         {
             static_assert(rcoro::var_names_are_unique_per_yield<T>);
@@ -593,14 +599,40 @@ std::string serialize(const T &c)
     }
     return std::move(ss).str();
 }
+
+int main()
+{
+    auto fib = RCORO({
+        RC_VAR(a, 0);
+        RC_VAR(b, 1);
+
+        RC_YIELD_NAMED("before_loop", a);
+
+        while (true)
+        {
+            RC_YIELD_NAMED("in_loop", b);
+
+            int tmp = a;
+            a = b;
+            b += tmp;
+        }
+
+        return -1;
+    });
+
+    // Run for a bit.
+    fib(); fib(); fib(); fib();
+
+    std::cout << serialize(fib) << '\n';
+}
 ```
 
-For our fibonacci example from the beginning, after calling it several times, this outputs
+We used a modified fibonacci example from the beginning, with named yield points.
 ```cpp
-0     // `.finish_reason() == 0`, aka `not_finished`.
-2     // `.yield_point()` == 2, the second `RC_YIELD` in the code.
-a 1   // a=1
-b 2   // b=2
+0         // `.finish_reason() == 0`, aka `not_finished`.
+"in_loop" // `.yield_point_name()` for the second `RC_YIELD` in the code.
+a 1       // a=1
+b 2       // b=2
 ```
 
 ## Deserialization
@@ -667,8 +699,10 @@ void deserialize(std::string source, T &coro)
     int yield_point = 0; // Must default to `0`.
     if (fin_reason == rcoro::finish_reason::not_finished)
     {
-        if (!(ss >> yield_point))
+        std::string name;
+        if (!(ss >> std::quoted(name)))
             throw std::runtime_error("bad yield point");
+        yield_point = rcoro::yield_index<T>(name); // Throws on bad name.
     }
 
     coro.load_unordered(fin_reason, yield_point, [&](auto var)
@@ -705,7 +739,41 @@ void deserialize(std::string source, T &coro)
         }
     );
 }
+
+int main()
+{
+    auto fib = RCORO({
+        RC_VAR(a, 0);
+        RC_VAR(b, 1);
+
+        RC_YIELD_NAMED("before_loop", a);
+
+        while (true)
+        {
+            RC_YIELD_NAMED("in_loop", b);
+
+            int tmp = a;
+            a = b;
+            b += tmp;
+        }
+
+        return -1;
+    });
+
+    std::string source = R"(
+        0
+        "in_loop"
+        a 1
+        b 2
+    )";
+
+    deserialize(std::move(source), fib);
+
+    std::cout << fib() << '\n'; // 3, which is the next number.
+}
 ```
+
+Here we use the same coroutine, and the string created by the previous example.
 
 The first lambda is called once. It's responsible for reading the variable name, then passing it (as index) to its parameter `var()`.
 

@@ -469,7 +469,7 @@ Storage for different variables can overlap, if they don't exist at the same tim
     * Mapping names back to indices — `yield_index<T>("name")` and others
     * Check for uniqueness — `yield_names_are_unique<T>`
   * Relation to variables:
-    * Which variables exist here — `yield_vars_const<T, i>`, `var_lifetime_overlaps_yield<T>(i, j)`, and others
+    * Which variables exist here — `yield_vars<T>(i)`, `var_lifetime_overlaps_yield<T>(i, j)`, and others
 
 ### Syntax
 

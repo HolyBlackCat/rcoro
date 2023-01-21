@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 100
+#define RCORO_VERSION 200
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -1824,8 +1824,11 @@ namespace rcoro
             }
         };
 
-        template <typename T, typename Vtable> requires std::is_base_of_v<basic_vtable, Vtable>
-        constexpr Vtable vtable_storage = []{Vtable ret; ret.template fill<T>(); return ret;}();
+        // Stores vtables.
+        // `UserParams...` can be anything, the examples in the readme use them.
+        template <typename T, typename Vtable, typename ...UserParams>
+        requires std::is_base_of_v<basic_vtable, Vtable>
+        constexpr Vtable vtable_storage = []{Vtable ret; ret.template fill<T, UserParams...>(); return ret;}();
 
 
         template <typename R, typename ...P>
@@ -2131,7 +2134,7 @@ namespace rcoro
 
         any(const any &) = default;
         any(any &&) = default;
-        // Unsure why this is needed, but without this, we get `nothrow_copy_assignable == true`, which is wrong.
+        // Unsure why this is needed, but without this, we get `nothrow_copy_assignable == true`, which is wrong. Looks like a Clang bug.
         any &operator=(const any &) noexcept(false) = default;
         any &operator=(any &&) = default;
     };

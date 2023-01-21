@@ -1942,20 +1942,6 @@ namespace rcoro
         };
 
 
-        namespace type_erasure_detail
-        {
-            struct MemoryGuard
-            {
-                void *ret = nullptr;
-                bool fail = true;
-                ~MemoryGuard()
-                {
-                    if (fail)
-                        operator delete(ret);
-                }
-            };
-        }
-
         template <typename R, typename ...P>
         struct basic_any_noncopyable_vtable : basic_interface_vtable<R, P...>
         {
@@ -1963,15 +1949,15 @@ namespace rcoro
             template <typename T>
             static constexpr bool constructor_param_allowed = true;
 
-            void (*destroy_at)(void *) noexcept = nullptr;
+            void (*delete_ptr)(void *) noexcept = nullptr;
 
             template <typename T>
             constexpr void fill()
             {
                 basic_interface_vtable<R, P...>::template fill<T>();
-                destroy_at = [](void *c) noexcept
+                delete_ptr = [](void *c) noexcept
                 {
-                    std::destroy_at(static_cast<T *>(c));
+                    delete static_cast<T *>(c);
                 };
             }
         };
@@ -2005,17 +1991,11 @@ namespace rcoro
                 && std::is_constructible_v<std::remove_cvref_t<T>, T &&> // Can copy/move into the wrapper.
                 && Vtable::template constructor_param_allowed<T>
                 && std::remove_cvref_t<T>::template callable_as<R, P...>
-                && (alignof(std::remove_cvref_t<T>) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__)
             basic_any_noncopyable(T &&coro)
             {
                 using type = std::remove_cvref_t<T>;
-
                 vptr = &vtable_storage<type, Vtable>;
-                type_erasure_detail::MemoryGuard guard;
-                guard.ret = operator new(sizeof(type));
-                std::construct_at(reinterpret_cast<type *>(guard.ret), std::forward<T>(coro));
-                memory = guard.ret;
-                guard.fail = false;
+                memory = new type(std::forward<T>(coro));
             }
 
             // From an other wrapper.
@@ -2046,8 +2026,7 @@ namespace rcoro
             {
                 if (vptr)
                 {
-                    vptr->destroy_at(memory);
-                    operator delete(memory);
+                    vptr->delete_ptr(memory);
                 }
             }
         };
@@ -2066,13 +2045,9 @@ namespace rcoro
             constexpr void fill()
             {
                 basic_any_noncopyable_vtable<R, P...>::template fill<T>();
-                copy_construct = [](const void *c)
+                copy_construct = [](const void *c) -> void *
                 {
-                    type_erasure_detail::MemoryGuard guard;
-                    guard.ret = operator new(sizeof(T));
-                    std::construct_at(static_cast<T *>(guard.ret), *static_cast<const T *>(c));
-                    guard.fail = false;
-                    return guard.ret;
+                    return new T(*static_cast<const T *>(c));
                 };
             }
         };

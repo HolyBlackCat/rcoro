@@ -375,7 +375,6 @@ int main()
     //   * <=> == for specific_coro and all the type-erasure wrappers.
     //   * Optimized assignments between the same yield points? (use assignment instead of reconstruction)
     //   * `.var` and `.var_exists` should disambiguate variable names based on yield index.
-    //   * Overaligned heap allocation?
     //   * `__restrict` per variable (unsure how helpful this is in the first place; note that the guards and `::new` would have to honor it).
 
     // Make sure our macros prefix everything with `::`.
@@ -2807,10 +2806,6 @@ R"(yield_point = 3, `h`
                 // Reject construction on return type mismatch.
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<std::string()>, decltype(x)>);
 
-                // Reject overaligned types.
-                auto y = RCORO({RC_VAR(a, Overaligned{}); (void)a; RC_YIELD();});
-                static_assert(!std::is_constructible_v<rcoro::any_noncopyable<void()>, decltype(y)>);
-
                 // Allow conversions in the return type.
                 static_assert(!std::is_constructible_v<rcoro::any_noncopyable<float()>, decltype(x)>);
 
@@ -3026,10 +3021,6 @@ R"(yield_point = 3, `h`
                 // Reject construction on return type mismatch.
                 static_assert(!std::is_constructible_v<rcoro::any<std::string()>, decltype(x)>);
 
-                // Reject overaligned types.
-                auto y = RCORO({RC_VAR(a, Overaligned{}); (void)a; RC_YIELD();});
-                static_assert(!std::is_constructible_v<rcoro::any<void()>, decltype(y)>);
-
                 // Allow conversions in the return type.
                 static_assert(!std::is_constructible_v<rcoro::any<float()>, decltype(x)>);
 
@@ -3243,6 +3234,12 @@ R"(yield_point = 3, `h`
             ASSERT(a.finished());
 
             *test_detail::a_log += "... done\n";
+        }
+
+        { // Overaligned types.
+            auto x = RCORO({RC_VAR(a, Overaligned{}); (void)a; RC_YIELD();});
+            rcoro::any<void()> y = x;
+            rcoro::any<void()> z = y;
         }
     }
 

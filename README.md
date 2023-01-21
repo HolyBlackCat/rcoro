@@ -2,6 +2,9 @@
 
 Copyable, serializable coroutines, implemented with macros.
 
+[![tests badge](https://github.com/HolyBlackCat/rcoro/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/HolyBlackCat/better_braces/actions?query=branch%3Amaster)<br/>
+<kbd>[try on gcc.godbolt.org][1]</kbd>
+
 * [Stackless](https://stackoverflow.com/a/28989543/2752075)<sup>1</sup>, like C++20 coroutines.
 * Can be used [**without heap allocation**](#memory-layout)<sup>2</sup>.
 * **Copyable** - a paused coroutine can be copied with all its stack variables.
@@ -1104,3 +1107,7 @@ int main()
     // Viola!
 }
 ```
+
+
+
+  [1]: https://gcc.godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:36,endLineNumber:28,positionColumn:36,positionLineNumber:28,selectionStartColumn:36,selectionStartLineNumber:28,startColumn:36,startLineNumber:28),source:'%23include+%3Chttps://raw.githubusercontent.com/HolyBlackCat/macro_sequence_for/master/include/macro_sequence_for.h%3E%0A%23include+%3Chttps://raw.githubusercontent.com/HolyBlackCat/rcoro/master/include/rcoro.hpp%3E%0A%0A%23include+%3Ccstdio%3E%0A%23include+%3Ciostream%3E%0A%0Aint+main()%0A%7B%0A++++auto+fib+%3D+RCORO(%7B%0A++++++++RC_VAR(a,+0)%3B+//+int+a+%3D+0%3B%0A++++++++RC_VAR(b,+1)%3B+//+int+b+%3D+1%3B%0A%0A++++++++RC_YIELD(a)%3B+//+Return+%60a%60+and+pause.%0A%0A++++++++while+(true)%0A++++++++%7B%0A++++++++++++RC_YIELD(b)%3B+//+Return+%60b%60+and+pause.%0A%0A++++++++++++int+tmp+%3D+a%3B%0A++++++++++++a+%3D+b%3B%0A++++++++++++b+%2B%3D+tmp%3B%0A++++++++%7D%0A%0A++++++++return+-1%3B+//+Unreachable,+but+some+compilers+warn+otherwise.%0A++++%7D)%3B%0A%0A++++for+(int+i+%3D+0%3B+i+%3C+5%3B+i%2B%2B)%0A++++++++std::printf(%22%25d%5Cn%22,+fib())%3B%0A%7D%0A'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),k:49.22570909891783,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((g:!((h:compiler,i:(compiler:clang1500,deviceViewOpen:'1',filters:(b:'0',binary:'1',binaryObject:'1',commentOnly:'0',demangle:'0',directives:'0',execute:'0',intel:'0',libraryCode:'1',trim:'1'),flagsViewOpen:'1',fontScale:14,fontUsePx:'0',j:2,lang:c%2B%2B,libs:!(),options:'-std%3Dc%2B%2B20+-pedantic-errors+-Wall+-Wextra+-Wdeprecated+-O2+-DNDEBUG',paneName:Clang,selection:(endColumn:1,endLineNumber:1,positionColumn:1,positionLineNumber:1,selectionStartColumn:1,selectionStartLineNumber:1,startColumn:1,startLineNumber:1),source:1),l:'5',n:'0',o:Clang,t:'0')),header:(),l:'4',m:46.40234948604993,n:'0',o:'',s:0,t:'0'),(g:!((h:output,i:(compilerName:'x86-64+clang+15.0.0',editorid:1,fontScale:13,fontUsePx:'0',j:2,paneName:'Clang+output',wrap:'0'),l:'5',n:'0',o:'Clang+output',t:'0')),header:(),l:'4',m:53.59765051395007,n:'0',o:'',s:0,t:'0')),k:50.77429090108217,l:'3',n:'0',o:'',t:'0')),l:'2',n:'0',o:'',t:'0')),version:4

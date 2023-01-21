@@ -423,13 +423,13 @@ A coroutine can be in three states:
 
 State | `.busy()` | `.finished()` | `.finish_reason()` | `.yield_point()`
 ---|---|---|---|---
-Currently running|✅`true`|❌`false`|`not_finished`|`0`..`N-1`
-Just returned from `RCORO()`, or after `.rewind()`|❌`false`|❌`false`|`not_finished`|`0`
+Currently running|🟢`true`|❌`false`|`not_finished`|`0`..`N-1`
+Just returned from `RCORO()`,<br/>or after `.rewind()`|❌`false`|❌`false`|`not_finished`|`0`
 Paused at `RC_YIELD()`|❌`false`|❌`false`|`not_finished`|`1`..`N-1`
-Finished normally or via `return`|❌`false`|✅`true`|`success`|`0`
-Finished via exception|❌`false`|✅`true`|`exception`|`0`
-After `.reset()`, or default-constructed, or moved-from|❌`false`|✅`true`|`reset`|`0`
-Null `any<...>` or `any_noncopyable<...>` or `view<...>`|❌`false`|✅`true`|`null`|`0`
+Finished normally<br/>or via `return`|❌`false`|🟢`true`|`success`|`0`
+Finished via exception|❌`false`|🟢`true`|`exception`|`0`
+After `.reset()`, or<br/>default-constructed,<br/>or moved-from|❌`false`|🟢`true`|`reset`|`0`
+Null `any<...>`, or<br/>`any_noncopyable<...>`,<br/>or `view<...>`|❌`false`|🟢`true`|`null`|`0`
 
 `operator bool` returns `!finished()`.
 

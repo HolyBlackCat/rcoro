@@ -1,20 +1,53 @@
-# ~ rcoro ~
+# ✨ rcoro ✨
 
-Coroutines, reimplemented using macros.
+Copyable, serializable coroutines, implemented with macros.
 
 * [Stackless](https://stackoverflow.com/a/28989543/2752075)<sup>1</sup>, like C++20 coroutines.
-* Can be used [**without heap allocation**](#rcoro)<sup>2</sup>. <!-- Wrong link in VSC, but correct on GitHub. -->
+* Can be used [**without heap allocation**](#memory-layout)<sup>2</sup>.
 * **Copyable** - a paused coroutine can be copied with all its stack variables.
-* [**Reflectable**](TODO LINK HERE) - examine values of individual variables in a paused coroutine.
+* [**Reflectable**](#inspecting-coroutine-variables) - examine values of individual variables in a paused coroutine.
 * [**Serializable**](TODO LINK HERE)<sup>3</sup> - dump coroutine state to a file or transfer it over network.
 * Unlike any other macro-coroutine library I know of, we allow variables to be declared anywhere, not only at the beginning of the coroutine. Variable lifetimes are tracked individually.
 * Header-only, written in pure standard C++. We imitate true coroutines with copious use of macros and `goto`.
 
-<sup>1</sup> Can pause aka "yield" only directly from the coroutine body, not from a function it calls.
+<sup>1 — Can pause aka "yield" only directly from the coroutine body, not from a function it calls.</sup><br/>
+<sup>2 — Unlike C++20 coroutines, which are allocated on the heap, unless the compiler optimizes that away.</sup><br/>
+<sup>3 — Hook up your preferred serialization method, [see examples](TODO LINK).</sup>
 
-<sup>2</sup> Unlike C++20 coroutines, which are allocated on the heap, unless the compiler optimizes that away.
+<details><summary><b>Table of contents</b></summary>
+<p>
 
-<sup>3</sup> Hook up your preferred serialization method, [see examples](TODO LINK).
+* [Minimal example](#minimal-example)
+* [Usage](#usage)
+* [Introduction](#introduction)
+  * [A minimal coroutine](#a-minimal-coroutine)
+  * [Variables](#variables)
+  * [`for` loops](#for-loops)
+  * [Generating values](#generating-values)
+  * [Passing parameters](#passing-parameters)
+  * [Storing coroutines in variables](#storing-coroutines-in-variables)
+  * [Passing coroutines to functions](#passing-coroutines-to-functions)
+  * [Debug information](#debug-information)
+  * [Inspecting coroutine variables](#inspecting-coroutine-variables)
+* [Reference](#reference)
+  * [Coroutine state](#coroutine-state)
+  * [Memory layout](#memory-layout)
+  * [Syntax](#syntax)
+    * [`RCORO(...)` macro](#rcoro-macro)
+    * [`RC_VAR(name, init);`](#rc_varname-init)
+    * [`RC_WITH_VAR(name, init)`](#rc_with_varname-init)
+    * [`RC_FOR((name, init); cond; step)`](#rc_forname-init-cond-step)
+    * [`return`](#return)
+    * [`RC_YIELD(...)`](#rc_yield)
+    * [`RC_YIELD_NAMED("name", ...)`](#rc_yield_namedname-)
+
+</p>
+</details>
+
+<!-- To regenerate the table of contents, run:
+grep -E '^##+ ' README.md | sed -E -e 's/^## /* /g' -e 's/^### /  * /g' -e 's/^#### /    * /g' | gawk '{$0 = gensub(/( *\* )(.*)/,"\\1[\\2]","g") "(#" gensub(/[^-_a-z0-9]/,"","g",gensub(/ /,"-","g",tolower(gensub(/ *\* /,"",1,$0)))) ")"; print}'
+-->
+
 
 ## Minimal example
 
@@ -52,9 +85,9 @@ Header-only. Just clone, add `include/` to the include path, and `#include <rcor
 
 Supported compilers are: GCC 10+, Clang 13+, and latest MSVC.
 
-Clang seems to be able to completely optimize away the coroutines, making them zero-cost. GCC is *usually* able to do that. And MSVC isn't.
+Clang and GCC are recommended, since they're better at optimizing away the coroutine internals, with GCC being slightly behind.
 
-Must use C++20 or newer. MSVC users must use `/Zc:preprocessor`.
+Must use C++20 or newer. MSVC users must use [`/Zc:preprocessor`](https://learn.microsoft.com/en-US/cpp/build/reference/zc-preprocessor?view=msvc-170).
 
 [`macro_sequence_for`](https://github.com/HolyBlackCat/macro_sequence_for) is a dependency. It's also header-only, clone it as well and add `macro_sequence_for/include/` to the include path.
 
@@ -85,10 +118,10 @@ int main()
 ```
 As you can see, our coroutines are lambda-like and are unnamed by default. Each has a unique type, like a lambda.
 
-See [this section](#returning-coroutines-from-functions-and-passing-them-around) for how to use them as normal non-lambda functions.
+See [*storing coroutines in variables*](#storing-coroutines-in-variables) for how to use them as normal non-lambda functions.
 
 ### Variables
-Variables must be declared with `RC_VAR(...);`. Failing to use this macro causes a compilation error. The macro is unnecessary if the variable isn't in scope at any `RC_YIELD()` calls.
+Variables must be declared with `RC_VAR(...);`. Failing to use this macro causes a compilation error. The macro is unnecessary if the variable isn't in scope at any of `RC_YIELD()` calls.
 ```cpp
 auto c = RCORO({
     // Declare a variable that should be saved into the coroutine state.
@@ -119,7 +152,7 @@ while (c)
 ```
 It's not possible to create an uninitialized variable. Use `RC_VAR(name, type{});` to only specify the type, this will zero the variable by default.
 
-`RC_VAR` must appear as a separate statement (i.e. a separate line), you can't do `for (RC_VAR(...); ...; ...)` or `if (RC_VAR(...))`.
+`RC_VAR` must appear as a separate statement (roughly, a separate line), you can't do `for (RC_VAR(...); ...; ...)` or `if (RC_VAR(...))`.
 
 ### `for` loops
 
@@ -186,6 +219,8 @@ std::cout << c() << '\n'; // 3
 
 The type is deduced automatically. The type must be the same in every `RC_YIELD` and `return`, otherwise you get a compilation error.
 
+`return`, with or without a value, finishes the coroutine.
+
 Coroutines always returns by value.
 
 Coroutines have `.begin()` and `.end()`, making them usable in `for` loops:
@@ -242,7 +277,7 @@ int main()
 }
 ```
 
-This pattern is useful for naming coroutines. And for class members, you'd want to add `MyClass &self` as a coroutine parameter.
+This pattern is useful for naming coroutines.
 
 Returning `auto` would work too, but it forces the function body to be visible at the call site, which is bad for compilation times.
 
@@ -282,6 +317,11 @@ int main()
     run(c); // 1...2...3
 }
 ```
+### Debug information
+
+A coroutine can be printed with `<<` to an `std::ostream` to get some debug information.
+
+You can also print `rcoro::debug_info<decltype(c)>` to get more information about the coroutine type.
 
 ### Inspecting coroutine variables
 
@@ -366,9 +406,49 @@ while (c)
 
 ## Reference
 
-### Macros
+### Coroutine state
 
-#### `RCORO(...)`
+A coroutine can be in three states:
+
+* Currently running (`.busy()`)
+* Finished (`.finished()`), inspect `.finish_reason()` for why it's finished.
+* Paused (otherwise)
+  * At the beginning, as returned from `RCORO()`. Indicated by `.yield_point() == 0`.
+  * At `RC_YIELD()`, indicated by `.yield_point() > 0`.
+
+State | `.busy()` | `.finished()` | `.finish_reason()` | `.yield_point()`
+---|---|---|---|---
+Currently running|✅`true`|❌`false`|`not_finished`|`0`..`N-1`
+Just returned from `RCORO()`, or after `.rewind()`|❌`false`|❌`false`|`not_finished`|`0`
+Paused at `RC_YIELD()`|❌`false`|❌`false`|`not_finished`|`1`..`N-1`
+Finished normally or via `return`|❌`false`|✅`true`|`success`|`0`
+Finished via exception|❌`false`|✅`true`|`exception`|`0`
+After `.reset()`, or default-constructed, or moved-from|❌`false`|✅`true`|`reset`|`0`
+Null `any<...>` or `any_noncopyable<...>` or `view<...>`|❌`false`|✅`true`|`null`|`0`
+
+`operator bool` returns `!finished()`.
+
+As you can see, `.finish_reason() != not_finished` if and only if `.finished() == true`.
+
+Also `.finished()` implies `.yield_point() == 0`. Normally `0` is used for the coroutines paused at the very beginning, but it's also reused for finished coroutines.
+
+Calling almost any other method on a `.busy()` coroutine throws. Trying to destroy or copy/move it terminates the program (don't want to forego `noexcept` just to report this error).
+
+Calling `operator()` throws if the coroutine is `.busy()` or `.finished()`.
+
+### Memory layout
+
+Each coroutine object stores two extra ints (the current `RC_YIELD` point, and a state enum), and all `RC_VAR` variables by value.
+
+Storage for different variables can overlap, if they don't exist at the same time. If a variable isn't visible at any `RC_YIELD` point, it's not stored in the coroutine object at all.
+
+`any<...>`, `any_noncopyable<...>`, `view<...>` all occupy two pointers: to the target object and to a vtable.
+
+`any<...>` and `any_noncopyable<...>` always allocate on the heap, they don't have embedded storage like `std::function` commonly does.
+
+### Syntax
+
+#### `RCORO(...)` macro
 
 Defines a coroutine. All other macros are only usable inside of `RCORO(...)`.
 
@@ -384,9 +464,7 @@ You can't refer to outside variables in the coroutine body, as if in a non-captu
 
 `RCORO(...)` returns an object of type `rcoro::specific_coro<T>`, where `T` is a unique opaque type.
 
-The resulting object is copyable and movable, if all the variables are. It doesn't do any heap allocation. It stores all `RC_VAR` variables, and two numbers: the current `RC_YIELD` index, and a hidden state enum.
-
-The variables are cleverly packed. If a variable dies before the next one is created, its storage will be reused (all of this is determined at compile-time). The variables that don't exist at any `RC_YIELD` point are not stored in the coroutine object at all (and don't affect copyability/moveability of the coroutine object, and so on).
+The resulting object is copyable and movable, if all the variables are.
 
 `RCORO(...)` can't appear inside of `decltype(...)` (GCC rejects this, but Clang and MSVC accept).
 
@@ -423,15 +501,13 @@ Can be followed by braces or by a single body line.
 
 Exactly equivalent to `RC_WITH_VAR(name, init); for(; cond; step)`.
 
-### `return`
+#### `return`
 
-Not a macro, but belongs here.
-
-`return` immediately stops the coroutine.
+`return` immediately stops the coroutine, and makes it `.finished()`.
 
 You can return a value, but then all `RC_YIELD`s and all other `return`s must return a value of the same type.
 
-In this regard, `return` is like a form of `RC_YIELD()` that also stops the coroutine afterwards.
+In this regard, `return` is like a form of `RC_YIELD()` that also finishes the coroutine.
 
 #### `RC_YIELD(...)`
 
@@ -452,34 +528,3 @@ The plain `RC_YIELD` uses `""` as the name, and so does the implicit yield point
 The second parameter is the return value. It is optional, like in `RC_YIELD`.
 
 Check `rcoro::yield_names_are_unique<decltype(coro)>` to see if all yield names are unique. Since the implicit first yield point uses `""` as the name, this requires all other yields to have non-empty names.
-
-### Coroutine class
-
-This is what `RCORO({...})` returns. Each use of the macro returns a unique type, `rcoro::specific_coro<??>`.
-
-It can be printed to an `std::ostream` with `<<` to the current debug state. Also print `rcoro::debug_info<decltype(c)>` to get debug type information.
-
-The coroutine starts paused at the implicit `RC_YIELD()` at the beginning.
-
-If a coroutine is currently running, `.busy()` will return true, and most functions will throw (except `.yield_point()` and `.yield_point()`). Copying or moving such a coroutine will instead crash the program (don't want to remove `noexcept` from move operations just to report this error).
-
-If not `.busy()`, the coroutine can either be finished (`.finished()`) or paused at one of the `RC_YIELD` points, including the implicit point at its beginning.
-
-Use `.reset()` to force-finish a coroutine, and `.rewind()` to forcefully rewind it to the beginning. Any `RC_VAR`s are destroyed automatically then.
-
-If finished, you can check `.finish_reason()` to see why:
-
-* `rcoro::finish_reason::success` — finished normally or via `return`
-* `rcoro::finish_reason::exception` — finished by throwing an exception
-* `rcoro::finish_reason::reset` — finished by calling `.reset()` or for any other reason
-* `rcoro::finish_reason::null` — not used by the actual coroutine class, only used by `rcoro::view`,`any`,`any_noncopyable` if they are default-constructed.
-
-If `!finished()`, `.finish_reason()` will instead return `rcoro::finish_reason::not_finsihed`.
-
-Default-constructed and moved-from coroutines also count as finished, with reason `reset`. To construct a ready coroutine, pass `rcoro::rewind` as an argument.
-
-If a coroutine is not finished, use `.yield_point()` to get the index of `RC_YIELD` at which it's paused. Finished coroutines report `0`. Use `.yield_point_name()` to get the optional name of the yield point, or an empty string if none. Reports an empty string for finished coroutines.
-
-The class is default-constructible, but any default-constructed instances are 'finished' by default. Construct with `rcoro::rewind` as an argument to construct a ready coroutine.
-
-The class is copyable and movable if all the `RC_VAR`s are (ignoring the ones with lifetimes not crossing a `RC_YIELD`, since those aren't stored in the coroutine class). `noexcept`-ness on the copy and move operations is determined automatically.

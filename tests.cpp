@@ -1610,6 +1610,7 @@ R"(yield_point = 3, `h`
             ASSERT(x.busy());
             ASSERT(x.yield_point() == yield_point);
             ASSERT(x.yield_point_name() == (yield_point == 0 ? "" : "y"));
+            THROWS("busy", x());
             THROWS("busy", x.var_exists<"a">());
             THROWS("busy", x.var<"a">());
             THROWS("busy", x.reset());

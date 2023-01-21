@@ -6,13 +6,13 @@ Copyable, serializable coroutines, implemented with macros.
 * Can be used [**without heap allocation**](#memory-layout)<sup>2</sup>.
 * **Copyable** - a paused coroutine can be copied with all its stack variables.
 * [**Reflectable**](#inspecting-coroutine-variables) - examine values of individual variables in a paused coroutine.
-* [**Serializable**](TODO LINK HERE)<sup>3</sup> - dump coroutine state to a file or transfer it over network.
+* [**Serializable**](#serialization--deserialization)<sup>3</sup> - dump coroutine state to a file or transfer it over network.
 * Unlike any other macro-coroutine library I know of, we allow variables to be declared anywhere, not only at the beginning of the coroutine. Variable lifetimes are tracked individually.
 * Header-only, written in pure standard C++. We imitate true coroutines with copious use of macros and `goto`.
 
 <sup>1 — Can pause aka "yield" only directly from the coroutine body, not from a function it calls.</sup><br/>
 <sup>2 — Unlike C++20 coroutines, which are allocated on the heap, unless the compiler optimizes that away.</sup><br/>
-<sup>3 — Hook up your preferred serialization method, [see examples](TODO LINK).</sup>
+<sup>3 — Hook up your preferred serialization method, [see examples](#serialization--deserialization).</sup>
 
 <details><summary><b>Table of contents</b></summary>
 <p>
@@ -32,6 +32,7 @@ Copyable, serializable coroutines, implemented with macros.
 * [Reference](#reference)
   * [Coroutine state](#coroutine-state)
   * [Memory layout](#memory-layout)
+  * [Type traits](#type-traits)
   * [Syntax](#syntax)
     * [`RCORO(...)` macro](#rcoro-macro)
     * [`RC_VAR(name, init);`](#rc_varname-init)
@@ -40,6 +41,10 @@ Copyable, serializable coroutines, implemented with macros.
     * [`return`](#return)
     * [`RC_YIELD(...)`](#rc_yield)
     * [`RC_YIELD_NAMED("name", ...)`](#rc_yield_namedname-)
+* [Serialization & deserialization](#serialization--deserialization)
+  * [Basic serialization](#basic-serialization)
+  * [Basic deserialization](#basic-deserialization)
+  * [Serializing and deserializing `rcoro::any<...>`](#serializing-and-deserializing-rcoroany)
 
 </p>
 </details>
@@ -549,7 +554,9 @@ The second parameter is the return value. It is optional, like in `RC_YIELD`.
 
 Check `rcoro::yield_names_are_unique<decltype(coro)>` to see if all yield names are unique. Since the implicit first yield point uses `""` as the name, this requires all other yields to have non-empty names.
 
-## Serialization
+## Serialization & deserialization
+
+### Basic serialization
 
 The general algorithm is as follows:
 
@@ -576,6 +583,9 @@ The general algorithm is as follows:
 Generally, if you know the storage format is stable, don't serialize variable/yield names. (E.g. when doing networking between applications known to have the exact same version.) And if the format can change, serialize the names, which will then allow you to tolerate minor coroutine changes, and/or fix the data to account for major changes.
 
 A toy example is below. I wouldn't use text `std::ostream` in the real world, and would recommend binary, JSON, etc. This does save both yield and variable names.
+
+<details><summary><b>Example: <code>serialize()</code></b></summary>
+<p>
 
 ```cpp
 template <rcoro::specific_coro_type T>
@@ -626,6 +636,7 @@ int main()
     std::cout << serialize(fib) << '\n';
 }
 ```
+</p></details>
 
 We used a modified fibonacci example from the beginning, with named yield points.
 ```cpp
@@ -635,7 +646,7 @@ a 1       // a=1
 b 2       // b=2
 ```
 
-## Deserialization
+### Basic deserialization
 
 The algorithm is as follows:
 
@@ -682,6 +693,9 @@ All functions accept `rcoro::finish_reason` and `int yield_index`. The latter mu
   The lambda is called repeatedly for every variable that needs to be loaded.
 
 * Lastly, `.load_unordered` will be demonstrated with a full example, matching our toy serializer above:
+
+<details><summary><b>Example: <code>deserialize()</code></b></summary>
+<p>
 
 ```cpp
 template <typename T>
@@ -773,8 +787,320 @@ int main()
 }
 ```
 
+</p>
+</details>
+
 Here we use the same coroutine, and the string created by the previous example.
 
 The first lambda is called once. It's responsible for reading the variable name, then passing it (as index) to its parameter `var()`.
 
 The second lambda is responsible for loading a single variable, and it's called whenever the first lambda calls `var()`.
+
+### Serializing and deserializing `rcoro::any<...>`
+
+With `any`, things get more complicated. Firstly, it lacks \[de\]serialization methods, because those are templates (for the same reason you can't template virtual functions).
+
+Luckily, `any` is extensible, and you can extend it with *specific* (not templated) \[de\]serialization methods.
+
+We will create `my_any<...>` that extends `any<...>` with what we need.
+
+This is quite verbose, but it exactly mimics how `any` itself extends `any_noncopyable` (with copyability), which in turn extends yet another internal class. So you can always look into the library code for inspiration.
+
+<details><summary><b>Example: unfinished <code>any</code> [de]serialization</b></summary>
+<p>
+
+```cpp
+// Paste `serialize()` and `deserialize()` from the previous examples here.
+
+// This stores function pointers to any functions we need to support.
+// We inherit from an existing class, because there are some internal functions her etoo.
+template <typename R, typename ...P>
+struct basic_my_any_vtable : rcoro::type_erasure_bits::basic_any_vtable<R, P...>
+{
+    // Our function pointers.
+    std::string (*save)(const void *) = nullptr;
+    void (*load)(void *, std::string) = nullptr;
+
+    template <typename T>
+    constexpr void fill()
+    {
+        // Forward to the parent method.
+        rcoro::type_erasure_bits::basic_any_vtable<R, P...>::template fill<T>();
+        // Call the `serialize()`/`deserialize()` methods from the previous examples.
+        save = [](const void *c){return serialize(*static_cast<const T *>(c));};
+        load = [](void *c, std::string s){deserialize(std::move(s), *static_cast<T *>(c));};
+    }
+};
+
+// An intermediate class. Not strictly necessary, but will be convenient
+// if you decide to *further* extend your own `any` variant in yet another class.
+template <typename Derived, typename Vtable, typename R, typename ...P>
+class basic_my_any : public rcoro::type_erasure_bits::basic_any<Derived, Vtable, R, P...>
+{
+    using base = rcoro::type_erasure_bits::basic_any<Derived, Vtable, R, P...>;
+
+  public:
+    using base::base;
+
+    // Our user-facing methods.
+    std::string save() const
+    {
+        // `save()` is defined in our `basic_my_any_vtable`.
+        return this->vptr->save(this->memory);
+    }
+    void load(std::string value) const
+    {
+        // `load()` is defined in our `basic_my_any_vtable`.
+        return this->vptr->load(std::move(value), this->memory);
+    }
+};
+
+// Finally, the actual class we're making.
+template <rcoro::func_type T>
+class my_any;
+template <typename R, typename ...P>
+class my_any<R(P...)> : public basic_my_any<my_any<R(P...)>, basic_my_any_vtable<R, P...>, R, P...>
+{
+    using base = basic_my_any<my_any<R(P...)>, basic_my_any_vtable<R, P...>, R, P...>;
+
+  public:
+    using base::base;
+
+    my_any(const my_any &) = default;
+    my_any(my_any &&) = default;
+    // Unsure why this is needed, but without this, we get `nothrow_copy_assignable == true`, which is wrong. Looks like a Clang bug.
+    my_any &operator=(const my_any &) noexcept(false) = default;
+    my_any &operator=(my_any &&) = default;
+};
+```
+
+</p>
+</details>
+
+Now, `my_any<...>` is for all purposes equivalent to `rcoro::any<...>`, but with two extra functions, `save()` and `load()`.
+
+This is sweet, but for `.load()` to do its thing, you must first somehow load the correct coroutine **type** into `my_any`, since `.load()` can only adjust state of an existing coroutine.
+
+This is equivalent to the problem of \[de\]serializing a derived class, while only working with a pointer to its base.
+
+How do we fix this? We need to invent *names* for specific coroutines and store them in `my_any`. We need to serialize the name, and when deserializing, use the name to construct the correct coroutine type first, before performing the rest of deserialization.
+
+The syntax then becomes `my_any<void()> x = my_coro<"name">(RCORO({...}));`.
+
+For safety, it might be a good idea to instead do `my_any<"category", void()> x = make_my_any<"category", "name">(RCORO({...}));`, to split coroutine names into groups, limiting which coroutine can be loaded where, to guard against malevolent input. This is left as an exercise to the reader.
+
+We press onward.
+
+<details><summary><b>Example: <code>any</code> [de]serialization</b></summary>
+<p>
+
+```cpp
+// Paste `serialize()` and `deserialize()` from the previous examples here.
+
+// A return type for `my_coro()`.
+template <typename T, rcoro::const_string Name>
+struct my_coro_type
+{
+    T value; // The coroutine.
+    using coro_type = T;
+    static constexpr std::string_view name = Name.view();
+};
+// This function consturcts `my_coro_type` with a specific name.
+template <rcoro::const_string Name, typename T>
+[[nodiscard]] my_coro_type<std::remove_cvref_t<T>, Name> my_coro(T &&coro)
+{
+    return {std::forward<T>(coro)};
+}
+
+// This stores maps, mapping coroutine names to functions to construct them.
+// This is templated, to group coroutines by signatures.
+// We use `Vtable` as a template parameter (ultimately `basic_my_any_vtable<...>`),
+//   instead of directly the return type and parameter types,
+//   because if somebody futher extends your `my_any` class, they'll need separate
+//   maps, using their vtable class, not yours.
+// We use a function instead of a global variable, because variables are initialized
+//   too late, while we need it to be initialized on demand, when we first register
+//   our coroutines here.
+template <typename Vtable>
+auto &my_coro_map()
+{
+    // This requires some understanding how `rcoro::any` works. It contains two pointers:
+    // `void *memory`, pointing to the allocated object, and `Vtable *vptr`, pointing to what we call a vtable.
+    // In our example, `vptr` points to `basic_my_any_vtable`.
+    static std::map<std::string_view, void (*)(const Vtable *&vptr, void *&memory)> ret;
+    return ret;
+}
+
+// Instantiating this variable registers a coroutine type,
+// and the registration happens when the program starts,
+// regardless of where and when the variable is used.
+// `MyCoroType` is `my_coro_type<...>`.
+template <typename MyCoroType, typename Vtable>
+const std::nullptr_t register_my_coro = []{
+    auto lambda = [](const Vtable *&vptr, void *&memory)
+    {
+        // The `my_coro_type<T, Name>` is an extra parameter that goes straight to `basic_my_any_vtable::fill<...>()`,
+        // see below.
+        vptr = &rcoro::type_erasure_bits::vtable_storage<typename MyCoroType::coro_type, Vtable, MyCoroType>;
+        memory = new typename MyCoroType::coro_type;
+    };
+    // Insert into the map.
+    bool ok = my_coro_map<Vtable>().try_emplace(MyCoroType::name, lambda).second;
+    // Check for duplicate names.
+    // This can give you false positives if you have multiple DLLs, and register
+    // coroutine in a header. Fixing this is left as an exercise to the reader,
+    // or just don't do that, since coroutines are expensive to compile and don't belong in headers.
+    if (!ok)
+        throw std::runtime_error("Duplicate coroutine name: " + std::string(MyCoroType::name));
+
+    return nullptr; // Have to return *something*.
+}();
+
+// This stores function pointers to any functions we need to support.
+// We inherit from an existing class, because there are some internal functions her etoo.
+template <typename R, typename ...P>
+struct basic_my_any_vtable : rcoro::type_erasure_bits::basic_any_vtable<R, P...>
+{
+    // Our function pointers.
+    std::string (*save)(const void *) = nullptr;
+    void (*load)(void *, std::string) = nullptr;
+
+    // `Wrapper` is a custom parameter we later pass to `vtable_storage<...>`.
+    template <typename T, typename Wrapper>
+    constexpr void fill()
+    {
+        rcoro::type_erasure_bits::basic_any_vtable<R, P...>::template fill<T>();
+        save = [](const void *c)
+        {
+            // Now we include the type name here.
+            std::string ret(Wrapper::name);
+            ret += '\n';
+            ret += serialize(*static_cast<const T *>(c));
+            return ret;
+        };
+        load = [](void *c, std::string s)
+        {
+            // This stays unchanged, the name is processed elsewhere.
+            deserialize(std::move(s), *static_cast<T *>(c));
+        };
+    }
+};
+
+// An intermediate class. Not strictly necessary, but will be convenient
+// if you decide to *further* extend your own `any` variant in yet another class.
+template <typename Derived, typename Vtable, typename R, typename ...P>
+class basic_my_any : public rcoro::type_erasure_bits::basic_any<Derived, Vtable, R, P...>
+{
+    using base = rcoro::type_erasure_bits::basic_any<Derived, Vtable, R, P...>;
+
+    // We no longer inherit the constructors with `using base::base`,
+    // since we want to limit our object to only be created with `my_coro<"name">(...)`.
+
+  public:
+    constexpr basic_my_any() {}
+
+    template <typename T, rcoro::const_string Name>
+    constexpr basic_my_any(my_coro_type<T, Name> &&source)
+    {
+        // Here we pass an extra argument `my_coro_type<T, Name>`, which goes
+        // straight to `basic_my_any_vtable::fill<...>()`.
+        this->vptr = &rcoro::type_erasure_bits::vtable_storage<T, Vtable, my_coro_type<T, Name>>;
+        this->memory = new T(std::move(source.value));
+
+        // Poke `register_my_coro` to force it to run the registration code when the program starts.
+        [[maybe_unused]] auto dummy = register_my_coro<my_coro_type<T, Name>, Vtable>;
+    }
+
+    std::string save() const
+    {
+        // `save()` is defined in our `basic_my_any_vtable`.
+        return this->vptr->save(this->memory);
+    }
+    // This is now static.
+    static Derived load(std::string value)
+    {
+        // Extract the name from `value`.
+        auto pos = value.find_first_of('\n');
+        if (pos == std::string::npos)
+            throw std::runtime_error("Expected newline after the coroutine name.");
+        std::string name = value.substr(0, pos); // Extract the name.
+        value = std::move(value).substr(pos + 1); // Remove the name from the string.
+
+        Derived ret; // `my_any<R(P...)> ret;`, unless somebody further extends your class.
+
+        // Load the correct type using our function map.
+        my_coro_map<Vtable>().at(name)(ret.vptr, ret.memory);
+        // Lastly, deserialize the coroutine.
+        ret.vptr->load(ret.memory, std::move(value));
+
+        return ret; // Boom, we're done.
+    }
+};
+
+// Finally, the actual class we're making.
+template <rcoro::func_type T>
+class my_any;
+template <typename R, typename ...P>
+class my_any<R(P...)> : public basic_my_any<my_any<R(P...)>, basic_my_any_vtable<R, P...>, R, P...>
+{
+    using base = basic_my_any<my_any<R(P...)>, basic_my_any_vtable<R, P...>, R, P...>;
+
+  public:
+    using base::base;
+
+    my_any(const my_any &) = default;
+    my_any(my_any &&) = default;
+    // Unsure why this is needed, but without this, we get `nothrow_copy_assignable == true`, which is wrong. Looks like a Clang bug.
+    my_any &operator=(const my_any &) noexcept(false) = default;
+    my_any &operator=(my_any &&) = default;
+};
+```
+
+</p>
+</details>
+
+And the usage:
+```cpp
+int main()
+{
+    my_any<int()> x = my_coro<"fib">(RCORO({
+        RC_VAR(a, 0);
+        RC_VAR(b, 1);
+
+        RC_YIELD_NAMED("before_loop", a);
+
+        while (true)
+        {
+            RC_YIELD_NAMED("in_loop", b);
+
+            int tmp = a;
+            a = b;
+            b += tmp;
+        }
+
+        return -1;
+    }));
+
+    x(); x(); x(); x(); // Run for a bit.
+
+    std::cout << x.save() << '\n';
+
+    // This prints:
+    //     fib      <- Note the coroutine name getting added here.
+    //     0
+    //     "in_loop"
+    //     a 1
+    //     b 2
+
+    // Now create some unrelated variable
+    my_any<int()> y = my_any<int()>::load(R"(fib
+        0
+        "in_loop"
+        a 1
+        b 2
+    )");
+
+    std::cout << y() << '\n'; // 3
+    // Viola!
+}
+```

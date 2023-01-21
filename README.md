@@ -446,6 +446,26 @@ Storage for different variables can overlap, if they don't exist at the same tim
 
 `any<...>` and `any_noncopyable<...>` always allocate on the heap, they don't have embedded storage like `std::function` commonly does.
 
+### Type traits
+
+`namespace rcoro` contains numerous type traits to inspect the type returned by `RCORO(...)`:
+
+* Return type — `return_type<T>`
+* Variables:
+  * Count — `num_vars<T>`
+  * Types — `var_type<T>`
+  * Names — `var_name<T>(i)` and others
+    * Mapping names back to indices — `var_index<T>("name")` and others
+    * Check for uniqueness — `var_names_are_unique_per_yield<T>`
+  * What storage is allocated — `frame_size<T>`, `frame_alignment<T>`, `frame_is_trivially_copyable<T>`, `var_offset<T, i>`, `var_lifetime_overlaps_var<T, i, j>`
+* Yield points:
+  * Count — `num_yields<T>`
+  * Names — `yield_name<T>(i)` and others
+    * Mapping names back to indices — `yield_index<T>("name")` and others
+    * Check for uniqueness — `yield_names_are_unique<T>`
+  * Relation to variables:
+    * Which variables exist here — `yield_vars_const<T, i>`, `var_lifetime_overlaps_yield<T>(i, j)`, and others
+
 ### Syntax
 
 #### `RCORO(...)` macro
@@ -528,3 +548,165 @@ The plain `RC_YIELD` uses `""` as the name, and so does the implicit yield point
 The second parameter is the return value. It is optional, like in `RC_YIELD`.
 
 Check `rcoro::yield_names_are_unique<decltype(coro)>` to see if all yield names are unique. Since the implicit first yield point uses `""` as the name, this requires all other yields to have non-empty names.
+
+## Serialization
+
+The general algorithm is as follows:
+
+* If `.busy()`, fail.
+* Serialize enum `.finish_reason()`.<br/>
+  Alternatively, just a boolean `.finished()`, if you don't care about the precise finish reason.
+
+* If `.finish_reason() != not_finished` (same as `.finished() == true`), stop.
+
+* Serialize int `.yield_point()` or string `.yield_point_name()`.<br/>
+  If you use the string, `static_assert` `yield_names_are_unique`.<br/>
+  Make sure you can handle an empty string, returned for `.yield_point() == 0`.
+
+* Serialize variables using [`.for_each_alive_var`](#inspecting-coroutine-variables).<br/>
+  Either include variable names or don't.<br/>
+  If you do, `static_assert` `var_names_are_unique_per_yield`.
+
+  You can include the variable count, if you want to validate it - `rcoro::yield_vars<T>(coro.yield_point()).size()` (this matches the number of iterations of `.for_each_alive_var`).
+
+  * Alternatively, you can serialize raw bytes instead of separate variables, if all your variable types are trivial.
+
+    `static_assert` `frame_is_trivially_copyable<T>`, and serialize `frame_size<T>` bytes from `.frame_storage()`.
+
+A toy example is below. I wouldn't use text `std::ostream` in the real world, and would recommend binary, JSON, etc.
+
+```cpp
+template <rcoro::specific_coro_type T>
+std::string serialize(const T &c)
+{
+    std::ostringstream ss;
+    ss << int(c.finish_reason()) << '\n'; // Consider using something more clever.
+    if (!c.finished())
+    {
+        ss << c.yield_point() << '\n';
+        c.for_each_alive_var([&](auto i)
+        {
+            static_assert(rcoro::var_names_are_unique_per_yield<T>);
+            ss << rcoro::var_name<T>(i.value) << ' ' << c.template var<i.value>() << '\n';
+            return false;
+        });
+    }
+    return std::move(ss).str();
+}
+```
+
+For our fibonacci example from the beginning, after calling it several times, this outputs
+```cpp
+0     // `.finish_reason() == 0`, aka `not_finished`.
+2     // `.yield_point()` == 2, the second `RC_YIELD` in the code.
+a 1   // a=1
+b 2   // b=2
+```
+
+## Deserialization
+
+The algorithm is as follows:
+
+* Read enum `rcoro::finish_reason`, or a boolean (depending on how you serialized it, see above). If you used a boolean, cast it to enum using `rcoro::finish_reason(boolean)`.
+
+* If you got `finish_reason == not_finished` (or, false boolean), read the yield position: either an integer or a string (depending on how you serialized it, see above). Convert string to integer using `yield_index<T>("name")`.
+
+  And if `finish_reason != not_finished` (or, true boolean), set yield position to `0`.
+
+* Read variables. You have three options:
+
+  * If you didn't serialize variable names, use `.load_ordered()`. It will tell you which and how many variables to read.
+  * If you did serialize variable names, use `.load_unordered()`. You must know when to stop reading (know how many variables you have serialized).
+  * If you serialized raw bytes, use `.load_raw_bytes()`.
+
+All those functions are robust, and will throw if you do something wrong. You don't have to do any extra input validation, if you're fine with getting an exception. You can throw from the callbacks, and they will never leak objects.
+
+All functions return `true` on success, and `false` if you aborted the load (each function uses a different way of aborting).
+
+All functions accept `rcoro::finish_reason` and `int yield_index`. The latter must be zero if `finish_reason != not_finished`.
+
+* `.load_raw_bytes` is easy:
+
+  ```cpp
+  c.load_raw_bytes(finish_reason, yield_index, []
+  {
+      // Load the bytes back into `c.frame_storage()`.
+      return true; // Return false to cancel.
+  }
+  ```
+
+  The lambda you pass is called once.
+
+* `.load_ordered` is slightly more complicated:
+
+  ```cpp
+  c.load_ordered(finish_reason, yield_index, [](auto index, auto construct)
+  {
+      // Read a variable of type `rcoro::var_type<decltype(c), index.value>`.
+      // Pass it to `construct(...)`.
+      // To abort, just don't call `construct()`.
+  });
+  ```
+  The lambda is called repeatedly for every variable that needs to be loaded.
+
+* Lastly, `.load_unordered` will be demonstrated with a full example, matching our toy serializer above:
+
+```cpp
+template <typename T>
+void deserialize(std::string source, T &coro)
+{
+    std::istringstream ss(std::move(source));
+
+    // Read finish reason.
+    int fin_reason_int = -1;
+    if (!(ss >> fin_reason_int))
+        throw std::runtime_error("bad finish reason");
+    rcoro::finish_reason fin_reason = rcoro::finish_reason(fin_reason_int);
+
+    // Read yield index.
+    int yield_point = 0; // Must default to `0`.
+    if (fin_reason == rcoro::finish_reason::not_finished)
+    {
+        if (!(ss >> yield_point))
+            throw std::runtime_error("bad yield point");
+    }
+
+    coro.load_unordered(fin_reason, yield_point, [&](auto var)
+        {
+            // This lambda is called once.
+
+            // Read next variable name, stop if no more variables.
+            std::string var_name;
+            while (ss >> var_name)
+            {
+                // Determine variable index. This automatically throws if the name is wrong.
+                // Don't use `var_index()` without `..._at_yield`, as it doesn't understand duplicate variable names even when the variables don't coexist.
+                int var_index = rcoro::var_index_at_yield<T>(yield_point, var_name);
+
+                // This calls the second lambda.
+                // Can add any arbitrary arguments, they will be passed to the second lambda.
+                var(var_index);
+            }
+
+            return true; // This checks that all variables are loaded, throws on failure. Return false to abort without those checks.
+        },
+        [&](auto var_index, auto construct)
+        {
+            // This lambda loads a single variable, it's called when the first one calls `var()`.
+
+            // Here we know the desired type.
+            rcoro::var_type<T, var_index.value> var;
+            ss >> var;
+            if (!ss)
+                // Or just return without calling `construct`, and somehow notify the first lambda that it should fail.
+                throw std::runtime_error("bad variable");
+
+            construct(std::move(var));
+        }
+    );
+}
+```
+
+The first lambda is called once. It's responsible for reading the variable name, then passing it (as index) to its parameter `var()`.
+
+The second lambda is responsible for loading a single variable, and it's called whenever the first lambda calls `var()`.

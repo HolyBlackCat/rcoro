@@ -3364,3 +3364,9 @@ R"(yield_point = 3, `h`
 
     return 0; // MSVC doesn't add this automatically in release builds?! Scanadalous.
 }
+
+// Check that we can declare coroutines at the global scope.
+[[maybe_unused]] auto global_coro = RCORO({
+    RC_VAR(a, 42); (void)a;
+    RC_YIELD();
+});

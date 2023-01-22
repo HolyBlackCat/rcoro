@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 200
+#define RCORO_VERSION 201
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -2251,7 +2251,7 @@ namespace rcoro
 // Creates a coroutine. Usage: `RCORO({...})` or `RCORO((params...){...})`.
 // In any case, the braces are optional, and are pasted into the coroutine body as is. They help with clang-format.
 #define RCORO(...) \
-    [&]{ \
+    []{ \
         /* A marker for stateful templates. */\
         struct _rcoro_Marker \
         { \

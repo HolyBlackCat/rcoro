@@ -14,6 +14,8 @@ Copyable, serializable coroutines, implemented with macros.
 * Exception-safe, everything is guarded with RAII, etc.
 * Header-only, written in pure standard C++. Imitates true coroutines with copious use of macros and `goto`.
 
+Read about [curious implementation details.](/docs/cool_tricks.md)
+
 <sup>1 — Can pause aka "yield" only directly from the coroutine body, not from a function it calls.</sup><br/>
 <sup>2 — Unlike C++20 coroutines, which are normally allocated on the heap, unless the compiler optimizes that away.</sup><br/>
 <sup>3 — Hook up your preferred serialization method, [see examples](#serialization--deserialization).</sup>
@@ -466,13 +468,17 @@ Calling `operator()` throws if the coroutine is `.busy()` or `.finished()`.
 
 ### Memory layout
 
-Each coroutine object stores two extra ints (the current `RC_YIELD` point, and a state enum), and all `RC_VAR` variables by value.
+The object returned from `RCORO({...})` doesn't perform any heap allocations.
+
+We calculate the required storage size at compile-time, and store all necessary variables in a single byte array.
+
+Each coroutine object also stores two extra ints (the current `RC_YIELD` point index, and a state enum).
 
 Storage for different variables can overlap, if they don't exist at the same time. If a variable isn't visible at any `RC_YIELD` point, it's not stored in the coroutine object at all.
 
 `any<...>`, `any_noncopyable<...>`, `view<...>` all occupy two pointers: to the target object and to a vtable.
 
-`any<...>` and `any_noncopyable<...>` always allocate on the heap, they don't have embedded storage like `std::function` commonly does.
+`any<...>` and `any_noncopyable<...>` always allocate on the heap, they don't even have embedded storage like `std::function` commonly does.
 
 ### More details on macros
 

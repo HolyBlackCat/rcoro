@@ -1,6 +1,6 @@
 # ✨ rcoro ✨
 
-Copyable, serializable coroutines, implemented with macros.
+Copyable, serializable coroutines with reflection, implemented using macros.
 
 [![tests badge](https://github.com/HolyBlackCat/rcoro/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/HolyBlackCat/better_braces/actions?query=branch%3Amaster)<br/>
 <kbd>[try on gcc.godbolt.org][1]</kbd>
@@ -18,7 +18,7 @@ Read about [curious implementation details.](/docs/cool_tricks.md)
 
 <sup>1 — Can pause aka "yield" only directly from the coroutine body, not from a function it calls.</sup><br/>
 <sup>2 — Unlike C++20 coroutines, which are normally allocated on the heap, unless the compiler optimizes that away.</sup><br/>
-<sup>3 — Hook up your preferred serialization method, [see examples](#serialization--deserialization).</sup>
+<sup>3 — Must bring your own serializer, [see examples](#serialization--deserialization).</sup>
 
 <details><summary><b>Table of contents</b></summary>
 <p>

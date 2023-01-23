@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 201
+#define RCORO_VERSION 202
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -290,6 +290,7 @@ namespace rcoro
         template <auto N, typename F>
         constexpr void with_const_index(decltype(N) i, F &&func)
         {
+            RCORO_ASSERT(i >= 0 && i < N);
             if constexpr (N > 0)
             {
                 with_const_index_low<N>(i, std::make_integer_sequence<decltype(N), N>{}, std::forward<F>(func));
@@ -417,7 +418,7 @@ namespace rcoro
         // Returns the number of yield points in a coroutine.
         template <typename T>
         struct NumYields : std::integral_constant<int, T::_rcoro_yields::size> {};
-        // Returns the name of a single yield point. `::value` is a `const_strict`.
+        // Returns the name of a single yield point. `::value` is a `const_string`.
         template <typename T, int N>
         using YieldName = typename TypeAt<N, typename T::_rcoro_yields>::type;
 
@@ -1651,6 +1652,9 @@ namespace rcoro
                                     throw std::runtime_error("This coroutine variable was already loaded.");
                                 std::construct_at(frame.template var_storage<var_index_const.value>(), std::forward<P>(params)...);
                                 vars_done[packed_var_index] = true;
+                                // GCC 12 warns about out-of-range index without this assert.
+                                // I wasn't able to trigger it, so I'll keep it, just in case.
+                                RCORO_ASSERT(guard.i < (int)std::size(guard.funcs));
                                 guard.funcs[guard.i++] = [](specific_coro &self) noexcept {std::destroy_at(&self.frame.template var<var_index_const.value>());};
                             }, decltype(extra)(extra)...);
                         });

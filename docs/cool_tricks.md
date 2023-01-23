@@ -6,6 +6,7 @@ This is a list of cool metaprogramming tricks used in this library.
   * [Friend injection](#friend-injection)
   * [Tracking variable lifetime at compile-time](#tracking-variable-lifetime-at-compile-time)
   * [Instantiating coroutine body twice](#instantiating-coroutine-body-twice)
+  * [Handling types defined locally](#handling-types-defined-locally)
 
 <!-- To regenerate the table of contents, run:
 grep -E '^##+ ' docs/cool_tricks.md | sed -E -e 's/^## /* /g' -e 's/^### /  * /g' -e 's/^#### /    * /g' | gawk '{$0 = gensub(/( *\* )(.*)/,"\\1[\\2]","g") "(#" gensub(/[^-_a-z0-9]/,"","g",gensub(/ /,"-","g",tolower(gensub(/ *\* /,"",1,$0)))) ")"; print}'
@@ -193,3 +194,17 @@ The first instantiation is the dummy one: the variables are replaced with placeh
 Then we use this knowledge to calculate the total required storage size (decide which variables don't coexist and thus can share storage, decide on the individual variable offsets in the resulting byte array). Since we know the storage size at compile-time, we can avoid heap allocation.
 
 Then we instantiate it again. This time the variable offsets get baked into the code. This copy is what gets called at runtime.
+
+### Handling types defined locally
+
+If a new type is created in the coroutine (a lambda, another coroutine, or a new `struct`), the type ends up being different in [the two instantiations](#instantiating-coroutine-body-twice).
+
+Even though it's for most purposes the same type, the two types are actually incompatible, can't be initialized with one another, and so on.
+
+This causes issues, because the variable types are collected during the first instantiation, and are used in the second one. This initially caused `RC_VAR`s with those types to not work at all.
+
+The solution: collect the types twice, once per instantiation.
+
+In the first set of types we only care about `sizeof` and `alignof` to calculate the required storage, and few other insignificant properties.
+
+The second set of types is what's actually used in most places, reported through reflection, etc. There are `static_assert`s to make sure the types have the same size and alignment, if the user somehow manages to change them.

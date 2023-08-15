@@ -148,7 +148,7 @@ Variables must be declared with `RC_VAR(...);`. Failing to use this macro causes
 ```cpp
 auto c = RCORO({
     // Declare a variable that should be saved into the coroutine state.
-    RC_VAR(i, 3); // `int i = 5;`, the type is deduced from the initializer.
+    RC_VAR(i, 3); // `int i = 3;`, the type is deduced from the initializer.
 
     while (i > 0)
     {

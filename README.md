@@ -181,7 +181,7 @@ It's not possible to create an uninitialized variable. Use `RC_VAR(name, type{})
 
 Again, `for (RC_VAR(...); ...; ...)` is illegal, `RC_VAR` can only appear on a separate line.
 
-And placing `RC_VAR` before the loop is undersirable, since the variable will still exist after the loop.
+And placing `RC_VAR` before the loop is undesirable, since the variable will still exist after the loop.
 
 There is a separate macro for sane `for` loops:
 ```cpp

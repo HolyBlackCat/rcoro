@@ -2,6 +2,8 @@
 #include <rcoro.hpp>
 #endif
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>

@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 203
+#define RCORO_VERSION 204
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -2361,7 +2361,8 @@ namespace rcoro
     /* If we're not jumping, initialize the variable. */\
     DETAIL_RCORO_VAR_INIT(ident, rawvarindex, __VA_ARGS__); \
     /* Jump target. */\
-  SF_CAT(_rcoro_label_, ident): \
+    /* Note the `;` right there. If you remove it, MSVC 19.38 stops seeing the variable override after it. How?! */\
+  SF_CAT(_rcoro_label_, ident): ; \
     /* The scope marker for `RC_YIELD()`. This used to be combined with one of the two `...CheckBraces...` variables above, */\
     /* but MSVC has a bug where a static constexpr variable can't shadow another one, and silently returns the original value. */\
     /* Because of that, this must be non-static. And since `goto` can't jump over init of non-static constexpr variables, */\

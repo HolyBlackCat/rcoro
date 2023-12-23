@@ -832,7 +832,7 @@ This is quite verbose, but it exactly mimics how `any` itself extends `any_nonco
 // Paste `serialize()` and `deserialize()` from the previous examples here.
 
 // This stores function pointers to any functions we need to support.
-// We inherit from an existing class, because there are some internal functions her etoo.
+// We inherit from an existing class, because there are some internal functions here too.
 template <typename R, typename ...P>
 struct basic_my_any_vtable : rcoro::type_erasure_bits::basic_any_vtable<R, P...>
 {
@@ -976,7 +976,7 @@ const std::nullptr_t register_my_coro = []{
 }();
 
 // This stores function pointers to any functions we need to support.
-// We inherit from an existing class, because there are some internal functions her etoo.
+// We inherit from an existing class, because there are some internal functions here too.
 template <typename R, typename ...P>
 struct basic_my_any_vtable : rcoro::type_erasure_bits::basic_any_vtable<R, P...>
 {

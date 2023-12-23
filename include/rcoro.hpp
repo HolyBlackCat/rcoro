@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 204
+#define RCORO_VERSION 205
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -73,18 +73,13 @@
 #endif
 #endif
 
-#ifndef RCORO_TEMPLATE_FRIEND
-#if defined(__clang__)
-// Silence a weird warning from Clang 13.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-function"
-#define RCORO_TEMPLATE_FRIEND(...) __VA_ARGS__
-#pragma GCC diagnostic pop
-#elif defined(__GNUC__)
 // Silences GCC's silly `-Wnon-template-friend` warning.
+#ifndef RCORO_TEMPLATE_FRIEND
+#if defined(__GNUC__) && !defined(__clang__)
 #define RCORO_TEMPLATE_FRIEND(...) \
     _Pragma("GCC diagnostic push") \
     _Pragma("GCC diagnostic ignored \"-Wnon-template-friend\"") \
+    _Pragma("GCC diagnostic ignored \"-Wunused-function\"") \
     __VA_ARGS__ \
     _Pragma("GCC diagnostic pop")
 #else

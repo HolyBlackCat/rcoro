@@ -96,11 +96,13 @@ std::copy_n(fib.begin(), 5, std::ostream_iterator<int>(std::cout, "\n")); // 5 8
 
 Header-only. Just clone, add `include/` to the include path, and `#include <rcoro.hpp>`.
 
-Supported compilers are: GCC 10+, Clang 13+, and the latest MSVC. Clang and GCC are recommended, since they're better at optimizing away the coroutine internals, with GCC being slightly behind.
+Supported compilers are: GCC 10+ (tested up to 13), Clang 14+ (tested up to 17), and the latest MSVC (last tested on 19.38). Clang and GCC are recommended, since they're better at optimizing away the coroutine internals, with GCC being slightly behind.
 
 Must use C++20 or newer. MSVC users must use [`/Zc:preprocessor`](https://learn.microsoft.com/en-US/cpp/build/reference/zc-preprocessor?view=msvc-170).
 
 [`macro_sequence_for`](https://github.com/HolyBlackCat/macro_sequence_for) is a dependency. It's also header-only, clone it as well and add `macro_sequence_for/include/` to the include path.
+
+If you're using a compiler version I didn't test for, consider building and running `tests.cpp` first.
 
 ### Using debugger
 
@@ -832,7 +834,7 @@ This is quite verbose, but it exactly mimics how `any` itself extends `any_nonco
 // Paste `serialize()` and `deserialize()` from the previous examples here.
 
 // This stores function pointers to any functions we need to support.
-// We inherit from an existing class, because there are some internal functions her etoo.
+// We inherit from an existing class, because there are some internal functions here too.
 template <typename R, typename ...P>
 struct basic_my_any_vtable : rcoro::type_erasure_bits::basic_any_vtable<R, P...>
 {
@@ -976,7 +978,7 @@ const std::nullptr_t register_my_coro = []{
 }();
 
 // This stores function pointers to any functions we need to support.
-// We inherit from an existing class, because there are some internal functions her etoo.
+// We inherit from an existing class, because there are some internal functions here too.
 template <typename R, typename ...P>
 struct basic_my_any_vtable : rcoro::type_erasure_bits::basic_any_vtable<R, P...>
 {

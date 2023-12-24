@@ -15,13 +15,18 @@ jobs:
         # Install latest Clang.
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh 15
+        sudo ./llvm.sh 16
+        sudo ./llvm.sh 17
+        # Remove unsupported Clang.
+        sudo apt remove clang-13
     - name: Clone deps
       run: git clone https://github.com/HolyBlackCat/macro_sequence_for ../macro_sequence_for
     - name: List compilers
       run: make -pq | grep ^COMPILER
+    - name: Confirm installed compilers
+      run: which clang++-17 clang++-16 clang++-15 clang++-14 g++-13 g++-12 g++-11 g++-10
     - name: Run tests
-      run: make COMPILER='clang++-15 clang++-14 clang++-13 g++-12 g++-11 g++-10' CXXFLAGS='-Werror' CXXFLAGS_PER_COMPILER='clang++-13=-Wno-gnu-zero-variadic-macro-arguments'
+      run: make COMPILER='clang++-17 clang++-16 clang++-15 clang++-14 g++-13 g++-12 g++-11 g++-10' CXXFLAGS='-Werror'
   Tests-MSVC:
     runs-on: windows-latest
     steps:

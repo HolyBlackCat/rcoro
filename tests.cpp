@@ -891,10 +891,10 @@ R"(yield_point = 3, `h`
             static_assert(std::is_same_v<decltype(x.reset()), decltype(x) &>);
             static_assert(std::is_same_v<decltype(x.rewind()), decltype(x) &>);
 
-            auto &&a = decltype(x){}.reset(); // Evaluated context, to force an instantiation.
-            static_assert(std::is_same_v<decltype(a), decltype(x) &&>);
-            auto &&b = decltype(x){}.rewind(); // Evaluated context, to force an instantiation.
-            static_assert(std::is_same_v<decltype(b), decltype(x) &&>);
+            decltype(x){}.reset(); // Force an instantiation.
+            static_assert(std::is_same_v<decltype(decltype(x){}.reset()), decltype(x) &&>);
+            decltype(x){}.rewind(); // Force an instantiation.
+            static_assert(std::is_same_v<decltype(decltype(x){}.rewind()), decltype(x) &&>);
         }
 
         { // Stateful.
@@ -2294,13 +2294,13 @@ R"(yield_point = 3, `h`
 
                     static_assert(rcoro::var_names_are_unique_per_yield<decltype(y)>);
 
-                    for (int yield_index : {2, 3})
+                    for (int i = 2; i <= 3; i++)
                     {
-                        ASSERT(y.load_unordered({}, yield_index,
+                        ASSERT(y.load_unordered({}, i,
                             [&](auto var)
                             {
-                                var(rcoro::var_index_at_yield<decltype(y)>(yield_index, "a"), 10);
-                                var(rcoro::var_index_at_yield<decltype(y)>(yield_index, "i"), 20);
+                                var(rcoro::var_index_at_yield<decltype(y)>(i, "a"), 10);
+                                var(rcoro::var_index_at_yield<decltype(y)>(i, "i"), 20);
                                 return true;
                             },
                             [](auto var_index, auto construct, int value)
@@ -2310,9 +2310,9 @@ R"(yield_point = 3, `h`
                             }
                         ));
 
-                        ASSERT(!y.finished() && y.yield_point() == yield_index);
-                        ASSERT(!y.var_exists<"unused">() && y.var_exists<"a">() && y.var_exists<2>() == (yield_index == 2) && y.var_exists<3>() == (yield_index == 3));
-                        ASSERT(y.var<"a">() == 10 && (yield_index == 2 ? y.var<2>() : y.var<3>()) == 20);
+                        ASSERT(!y.finished() && y.yield_point() == i);
+                        ASSERT(!y.var_exists<"unused">() && y.var_exists<"a">() && y.var_exists<2>() == (i == 2) && y.var_exists<3>() == (i == 3));
+                        ASSERT(y.var<"a">() == 10 && (i == 2 ? y.var<2>() : y.var<3>()) == 20);
                     }
                 }
             }

@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 205
+#define RCORO_VERSION 206
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -260,21 +260,21 @@ namespace rcoro
         constexpr void const_for(F &&func)
         {
             [&]<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
-                (void(func(std::integral_constant<decltype(N), I>{})), ...);
+                (void(func.template operator()<I>()), ...);
             }(std::make_integer_sequence<decltype(N), N>{});
         }
         template <auto N, typename F>
         constexpr void const_reverse_for(F &&func)
         {
             [&]<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
-                (void(func(std::integral_constant<decltype(N), N-I-1>{})), ...);
+                (void(func.template operator()<N-I-1>()), ...);
             }(std::make_integer_sequence<decltype(N), N>{});
         }
         template <auto N, typename F>
         constexpr bool const_any_of(F &&func)
         {
             return [&]<decltype(N) ...I>(std::integer_sequence<decltype(N), I...>){
-                return (func(std::integral_constant<decltype(N), I>{}) || ...);
+                return (func.template operator()<I>() || ...);
             }(std::make_integer_sequence<decltype(N), N>{});
         }
 
@@ -283,7 +283,7 @@ namespace rcoro
         template <auto N, typename F, decltype(N) ...I>
         constexpr void with_const_index_low(decltype(N) i, std::integer_sequence<decltype(N), I...>, F &&func)
         {
-            (void)((i == I ? void(std::forward<F>(func)(std::integral_constant<decltype(N), I>{})), true : false) || ...);
+            (void)((i == I ? void(std::forward<F>(func).template operator()<I>()), true : false) || ...);
         }
 
         // Transforms a runtime index to a compile-time one. UB if out of bounds.
@@ -303,7 +303,7 @@ namespace rcoro
 
         // An internal helper for `with_const_index`.
         template <auto I, typename F>
-        constexpr void with_const_index_helper(F &&func) {std::forward<F>(func)(std::integral_constant<decltype(I), I>{});}
+        constexpr void with_const_index_helper(F &&func) {std::forward<F>(func).template operator()<I>();}
 
         // Transforms a runtime index to a compile-time one. UB if out of bounds.
         // `func` is `void func(int i)`. It's called with the current yield point index, if any.
@@ -636,9 +636,9 @@ namespace rcoro
                 bool ret = false;
                 if (pos != 0) // Not strictly necessary, hopefully an optimization.
                 {
-                    with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
+                    with_const_index<NumYields<T>::value>(pos, [&]<auto Y>()
                     {
-                        ret = RawVarYieldReach<T, V, yieldindex.value>::value;
+                        ret = RawVarYieldReach<T, V, Y>::value;
                     });
                 }
                 return ret;
@@ -699,15 +699,15 @@ namespace rcoro
                 state = State::reset;
                 if (pos == 0) // Not strictly necessary, hopefully an optimization.
                     return;
-                with_const_index<NumYields<T>::value>(pos, [&](auto yieldindex)
+                with_const_index<NumYields<T>::value>(pos, [&]<auto Y>()
                 {
-                    constexpr auto num_indices = vars_reachable_from_yield<T, yieldindex.value>().size();
-                    const_reverse_for<num_indices>([&](auto varindex)
+                    constexpr auto num_indices = vars_reachable_from_yield<T, Y>().size();
+                    const_reverse_for<num_indices>([&]<auto V>()
                     {
                         // MSVC doesn't see this variable if we declare it outside of the lambda,
                         // so we either have to duplicate the declaration, or call the helper function twice.
-                        constexpr auto indices = vars_reachable_from_yield<T, yieldindex.value>();
-                        std::destroy_at(&var<indices[varindex.value]>());
+                        constexpr auto indices = vars_reachable_from_yield<T, Y>();
+                        std::destroy_at(&var<indices[V]>());
                     });
                 });
                 pos = 0;
@@ -727,10 +727,10 @@ namespace rcoro
                         return;
 
                     constexpr auto indices = vars_reachable_from_yield<T, Y>();
-                    const_reverse_for<indices.size()>([&](auto var)
+                    const_reverse_for<indices.size()>([&]<auto V>()
                     {
-                        if (var.value < i)
-                            rollback(std::integral_constant<int, indices[var.value]>{});
+                        if (V < i)
+                            rollback(std::integral_constant<int, indices[V]>{});
                     });
                 }
             };
@@ -746,18 +746,18 @@ namespace rcoro
                 if (pos == 0) // Not strictly necessary, hopefully an optimization.
                     return false;
                 bool ret = false;
-                with_const_index<NumYields<T>::value>(pos, [&](auto yield)
+                with_const_index<NumYields<T>::value>(pos, [&]<auto Y>()
                 {
-                    constexpr auto num_indices = vars_reachable_from_yield<T, yield.value>().size();
+                    constexpr auto num_indices = vars_reachable_from_yield<T, Y>().size();
 
-                    HandleVarsGuard<G, yield.value> guard{.rollback = rollback};
+                    HandleVarsGuard<G, Y> guard{.rollback = rollback};
 
-                    bool fail = const_any_of<num_indices>([&](auto var)
+                    bool fail = const_any_of<num_indices>([&]<auto V>()
                     {
-                        constexpr auto indices = vars_reachable_from_yield<T, yield.value>();
+                        constexpr auto indices = vars_reachable_from_yield<T, Y>();
 
                         bool already_incremented = false;
-                        bool stop = func(std::integral_constant<int, indices[var.value]>{}, [&]{
+                        bool stop = func(std::integral_constant<int, indices[V]>{}, [&]{
                             if (already_incremented)
                                 return;
                             already_incremented = true;
@@ -934,11 +934,10 @@ namespace rcoro
         template <typename T>
         constexpr auto var_name_to_index_mapping = []{
             std::array<std::pair<std::string_view, int>, NumVarsDense<T>::value> ret{};
-            const_for<NumVarsDense<T>::value>([&](auto index)
+            const_for<NumVarsDense<T>::value>([&]<auto V>()
             {
-                constexpr int i = index.value;
-                ret[i].first = VarName<T, i>::value.view();
-                ret[i].second = i;
+                ret[V].first = VarName<T, V>::value.view();
+                ret[V].second = V;
             });
             std::sort(ret.begin(), ret.end());
             return ret;
@@ -947,13 +946,12 @@ namespace rcoro
         constexpr auto var_name_to_index_mapping_per_yield = []{
             constexpr auto indices = vars_reachable_from_yield<T, Y>();
             std::array<std::pair<std::string_view, int>, indices.size()> ret{};
-            const_for<indices.size()>([&](auto index)
+            const_for<indices.size()>([&]<auto I>()
             {
                 // MSVC doesn't see `indices` from above here, so we repeat the definition.
                 constexpr auto indices = vars_reachable_from_yield<T, Y>();
-                constexpr int i = index.value;
-                ret[i].first = VarName<T, indices[i]>::value.view();
-                ret[i].second = indices[i];
+                ret[I].first = VarName<T, indices[I]>::value.view();
+                ret[I].second = indices[I];
             });
             std::sort(ret.begin(), ret.end());
             return ret;
@@ -962,11 +960,10 @@ namespace rcoro
         template <typename T>
         constexpr auto yield_name_to_index_mapping = []{
             std::array<std::pair<std::string_view, int>, NumYields<T>::value> ret{};
-            const_for<NumYields<T>::value>([&](auto index)
+            const_for<NumYields<T>::value>([&]<auto Y>()
             {
-                constexpr int i = index.value;
-                ret[i].first = YieldName<T, i>::value.view();
-                ret[i].second = i;
+                ret[Y].first = YieldName<T, Y>::value.view();
+                ret[Y].second = Y;
             });
             std::sort(ret.begin(), ret.end());
             return ret;
@@ -1065,9 +1062,9 @@ namespace rcoro
     [[nodiscard]] constexpr int var_index_at_yield_or_negative(int yield_index, std::string_view name)
     {
         int ret = unknown_name;
-        detail::with_const_index<detail::NumYields<detail::GetMarker<T>>::value>(yield_index, [&](auto yield_index_const)
+        detail::with_const_index<detail::NumYields<detail::GetMarker<T>>::value>(yield_index, [&]<auto Y>()
         {
-            const auto &arr = detail::var_name_to_index_mapping_per_yield<detail::GetMarker<T>, yield_index_const.value>;
+            const auto &arr = detail::var_name_to_index_mapping_per_yield<detail::GetMarker<T>, Y>;
             auto it = std::partition_point(arr.begin(), arr.end(), [&](const auto &pair){return pair.first < name;});
             if (it == arr.end() || it->first != name)
             {
@@ -1133,9 +1130,9 @@ namespace rcoro
 
     // Returns true if at every specific yield point, every variable name is unique.
     template <specific_coro_type T>
-    constexpr bool var_names_are_unique_per_yield = !detail::const_any_of<detail::NumYields<detail::GetMarker<T>>::value>([](auto yield_index)
+    constexpr bool var_names_are_unique_per_yield = !detail::const_any_of<detail::NumYields<detail::GetMarker<T>>::value>([]<auto Y>()
     {
-        const auto &arr = detail::var_name_to_index_mapping_per_yield<detail::GetMarker<T>, yield_index.value>;
+        const auto &arr = detail::var_name_to_index_mapping_per_yield<detail::GetMarker<T>, Y>;
         return std::adjacent_find(arr.begin(), arr.end(), [](const auto &a, const auto &b){return a.first == b.first;}) != arr.end();
     });
 
@@ -1161,9 +1158,9 @@ namespace rcoro
         if (yield_index < 0 || yield_index >= num_yields<T>)
             throw std::runtime_error("Coroutine yield point index is out of range.");
         std::span<const int> ret;
-        detail::with_const_index<num_yields<T>>(yield_index, [&](auto yield_index_const)
+        detail::with_const_index<num_yields<T>>(yield_index, [&]<auto Y>()
         {
-            ret = yield_vars_const<T, yield_index_const.value>;
+            ret = yield_vars_const<T, Y>;
         });
         return ret;
     }
@@ -1191,10 +1188,10 @@ namespace rcoro
         else
         {
             bool ret = false;
-            detail::with_const_index<num_yields<T>>(yield_index, [&](auto yield)
+            detail::with_const_index<num_yields<T>>(yield_index, [&]<auto Y>()
             {
                 auto vars = [&]<int ...V>(std::integer_sequence<int, V...>){
-                    return std::array{var_lifetime_overlaps_yield_const<T, V, yield.value>...};
+                    return std::array{var_lifetime_overlaps_yield_const<T, V, Y>...};
                 }(std::make_integer_sequence<int, num_vars<T>>{});
                 ret = vars[var_index];
             });
@@ -1508,13 +1505,13 @@ namespace rcoro
             bool ret = false;
             if (frame.pos != 0) // Not strictly necessary, hopefully an optimization.
             {
-                detail::with_const_index<num_yields<specific_coro>>(frame.pos, [&](auto yieldindex)
+                detail::with_const_index<num_yields<specific_coro>>(frame.pos, [&]<auto Y>()
                 {
-                    constexpr auto num_indices = yield_vars_const<specific_coro, yieldindex.value>.size();
-                    ret = detail::const_any_of<num_indices>([&](auto varindex)
+                    constexpr auto num_indices = yield_vars_const<specific_coro, Y>.size();
+                    ret = detail::const_any_of<num_indices>([&]<auto V>()
                     {
-                        constexpr auto indices = yield_vars_const<specific_coro, yieldindex.value>;
-                        return bool(func(std::integral_constant<int, indices[varindex.value]>{}));
+                        constexpr auto indices = yield_vars_const<specific_coro, Y>;
+                        return bool(func(std::integral_constant<int, indices[V]>{}));
                     });
                 });
             }
@@ -1622,30 +1619,26 @@ namespace rcoro
                 bool ret = false;
 
                 // We always have at least one
-                detail::with_const_index<num_yields<specific_coro>>(yield_index, [&](auto yield_index_const)
+                detail::with_const_index<num_yields<specific_coro>>(yield_index, [&]<auto Y>()
                 {
-                    constexpr int yield_index = yield_index_const.value;
-
-                    LoadUnorderedGuard<yield_index> guard{.co = *this};
-                    std::array<bool, yield_vars_const<specific_coro, yield_index>.size()> vars_done{};
+                    LoadUnorderedGuard<Y> guard{.co = *this};
+                    std::array<bool, yield_vars_const<specific_coro, Y>.size()> vars_done{};
 
                     bool ok = std::forward<F>(func)([&](int var_index, auto &&... extra)
                     {
-                        constexpr int yield_index = yield_index_const.value; // Redefine for buggy MSVC.
-
                         if (var_index < 0 || var_index >= num_vars<specific_coro>)
                             throw std::runtime_error("Coroutine variable index is out of range.");
-                        auto it = std::lower_bound(yield_vars_const<specific_coro, yield_index>.begin(), yield_vars_const<specific_coro, yield_index>.end(), var_index);
-                        if (it == yield_vars_const<specific_coro, yield_index>.end() || *it != var_index)
+                        auto it = std::lower_bound(yield_vars_const<specific_coro, Y>.begin(), yield_vars_const<specific_coro, Y>.end(), var_index);
+                        if (it == yield_vars_const<specific_coro, Y>.end() || *it != var_index)
                             throw std::runtime_error("This coroutine variable doesn't exist at this yield point.");
-                        auto packed_var_index = it - yield_vars_const<specific_coro, yield_index>.begin();
+                        auto packed_var_index = it - yield_vars_const<specific_coro, Y>.begin();
                         if (vars_done[packed_var_index])
                             throw std::runtime_error("This coroutine variable was already loaded.");
 
-                        detail::with_const_index<yield_vars_const<specific_coro, yield_index>.size()>(packed_var_index, [&](auto packed_var_index_const)
+                        detail::with_const_index<yield_vars_const<specific_coro, Y>.size()>(packed_var_index, [&]<auto PV>()
                         {
                             static constexpr auto var_index_const =
-                                std::integral_constant<int, yield_vars_const<specific_coro, yield_index_const.value>[packed_var_index_const.value]>{};
+                                std::integral_constant<int, yield_vars_const<specific_coro, Y>[PV]>{};
                             // This trick forces the return type to be `void`.
                             false ? void() : load_var(var_index_const, [&]<typename ...P>(P &&... params)
                             {
@@ -1663,7 +1656,7 @@ namespace rcoro
 
                     if (!ok)
                         return;
-                    if (guard.i != yield_vars_const<specific_coro, yield_index>.size())
+                    if (guard.i != yield_vars_const<specific_coro, Y>.size())
                         throw std::runtime_error("Some coroutine variables are missing.");
                     guard.fail = false;
                     ret = true;
@@ -1704,22 +1697,21 @@ namespace rcoro
             if (c.busy())
                 return s;
 
-            detail::const_for<num_vars<specific_coro>>([&](auto varindex)
+            detail::const_for<num_vars<specific_coro>>([&]<auto V>()
             {
-                constexpr int i = varindex.value;
-                s << "\n  " << i << ". " << var_name_const<specific_coro, i>.view();
-                if constexpr (detail::Printable<var_type<specific_coro, i>, std::basic_ostream<A, B>>)
+                s << "\n  " << V << ". " << var_name_const<specific_coro, V>.view();
+                if constexpr (detail::Printable<var_type<specific_coro, V>, std::basic_ostream<A, B>>)
                 {
-                    if (c.template var_exists<i>()) // GCC 11 needs `template` here.
-                        s << " = " << c.template var<i>(); // GCC 11 needs `template` here.
+                    if (c.template var_exists<V>()) // GCC 11 needs `template` here.
+                        s << " = " << c.template var<V>(); // GCC 11 needs `template` here.
                 }
                 else
                 {
-                    if (c.template var_exists<i>())
+                    if (c.template var_exists<V>())
                         s << " - alive but not printable";
                 }
 
-                if (!c.template var_exists<i>())
+                if (!c.template var_exists<V>())
                     s << " - dead";
             });
 
@@ -1746,18 +1738,15 @@ namespace rcoro
                 s << "frame: size=" << frame_size<T> << " align=" << frame_alignment<T> << '\n';
 
                 s << num_vars<T> << " variable" << (num_vars<T> != 1 ? "s" : "") << ":\n";
-                detail::const_for<num_vars<T>>([&](auto varindex)
+                detail::const_for<num_vars<T>>([&]<auto V>()
                 {
-                    constexpr int v = varindex.value;
-                    s << "  " << v << ". " << var_name_const<T, v>.view() << ", " << detail::type_name<var_type<T, v>>() << '\n';
-                    s << "      offset=" << var_offset<T, v> << ", size=" << sizeof(var_type<T, v>) << ", align=" << alignof(var_type<T, v>) << '\n';
+                    s << "  " << V << ". " << var_name_const<T, V>.view() << ", " << detail::type_name<var_type<T, V>>() << '\n';
+                    s << "      offset=" << var_offset<T, V> << ", size=" << sizeof(var_type<T, V>) << ", align=" << alignof(var_type<T, V>) << '\n';
 
                     bool first = true;
-                    detail::const_for<v>([&](auto sub_varindex)
+                    detail::const_for<V>([&]<auto V2>()
                     {
-                        constexpr int v = varindex.value; // Redeclare for buggy MSVC.
-                        constexpr int v2 = sub_varindex.value;
-                        if constexpr (var_lifetime_overlaps_var<T, v, v2>)
+                        if constexpr (var_lifetime_overlaps_var<T, V, V2>)
                         {
                             if (first)
                             {
@@ -1766,7 +1755,7 @@ namespace rcoro
                             }
                             else
                                 s << ", ";
-                            s << v2 << "." << var_name_const<T, v2>.view();
+                            s << V2 << "." << var_name_const<T, V2>.view();
                         }
                     });
                     if (!first)
@@ -1774,17 +1763,16 @@ namespace rcoro
                 });
 
                 s << num_yields<T> << " yield" << (num_yields<T> != 1 ? "s" : "") << ":";
-                detail::const_for<num_yields<T>>([&](auto yieldindex)
+                detail::const_for<num_yields<T>>([&]<auto Y>()
                 {
-                    constexpr int y = yieldindex.value;
-                    s << "\n  " << y << ". `" << yield_name_const<T, y>.view() << "`";
-                    detail::const_for<yield_vars_const<T, y>.size()>([&](auto packed_varindex)
+                    s << "\n  " << Y << ". `" << yield_name_const<T, Y>.view() << "`";
+                    detail::const_for<yield_vars_const<T, Y>.size()>([&]<auto PV>()
                     {
-                        if (packed_varindex.value == 0)
+                        if constexpr (PV == 0)
                             s << ", visible_vars: ";
                         else
                             s << ", ";
-                        constexpr auto varindex = yield_vars_const<T, yieldindex.value>[packed_varindex.value];
+                        constexpr auto varindex = yield_vars_const<T, Y>[PV];
                         s << varindex << "." << var_name_const<T, varindex>.view();
                     });
                 });

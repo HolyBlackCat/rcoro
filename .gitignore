@@ -3,3 +3,8 @@
 /.vscode/launch.json
 /compile_commands.json
 /tests
+/*.obj
+/*.o
+/*.pdb
+/tests
+/tests.exe

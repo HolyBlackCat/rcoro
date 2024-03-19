@@ -2,7 +2,7 @@
 
 Copyable, serializable coroutines with reflection, implemented using macros.
 
-[![tests badge](https://github.com/HolyBlackCat/rcoro/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/HolyBlackCat/better_braces/actions?query=branch%3Amaster)<br/>
+[![tests badge](https://github.com/HolyBlackCat/rcoro/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/HolyBlackCat/rcoro/actions?query=branch%3Amaster)<br/>
 <kbd>[try on gcc.godbolt.org][1]</kbd>
 
 * [Stackless](https://stackoverflow.com/a/28989543/2752075)<sup>1</sup>, like C++20 coroutines.

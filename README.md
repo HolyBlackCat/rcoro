@@ -96,7 +96,7 @@ std::copy_n(fib.begin(), 5, std::ostream_iterator<int>(std::cout, "\n")); // 5 8
 
 Header-only. Just clone, add `include/` to the include path, and `#include <rcoro.hpp>`.
 
-Supported compilers are: GCC 10+ (tested up to 13), Clang 14+ (tested up to 17), and the latest MSVC (last tested on 19.38). Clang and GCC are recommended, since they're better at optimizing away the coroutine internals, with GCC being slightly behind.
+Supported compilers are: GCC 10+ (tested up to 13), Clang 15+ (tested up to 18), and the latest MSVC (last tested on 19.38). Clang and GCC are recommended, since they're better at optimizing away the coroutine internals, with GCC being slightly behind. You might be able to get away with using slightly older compilers, try it.
 
 Must use C++20 or newer. MSVC users must use [`/Zc:preprocessor`](https://learn.microsoft.com/en-US/cpp/build/reference/zc-preprocessor?view=msvc-170).
 

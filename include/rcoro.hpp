@@ -44,7 +44,7 @@
 #endif
 
 // The version number: `major*10000 + minor*100 + patch`.
-#define RCORO_VERSION 206
+#define RCORO_VERSION 207
 
 // An assertion macro. If not customized, uses the standard `assert()`.
 #ifndef RCORO_ASSERT
@@ -1637,19 +1637,19 @@ namespace rcoro
 
                         detail::with_const_index<yield_vars_const<specific_coro, Y>.size()>(packed_var_index, [&]<auto PV>()
                         {
-                            static constexpr auto var_index_const =
+                            static constexpr auto var_index_c =
                                 std::integral_constant<int, yield_vars_const<specific_coro, Y>[PV]>{};
                             // This trick forces the return type to be `void`.
-                            false ? void() : load_var(var_index_const, [&]<typename ...P>(P &&... params)
+                            false ? void() : load_var(var_index_c, [&]<typename ...P>(P &&... params)
                             {
                                 if (vars_done[packed_var_index])
                                     throw std::runtime_error("This coroutine variable was already loaded.");
-                                std::construct_at(frame.template var_storage<var_index_const.value>(), std::forward<P>(params)...);
+                                std::construct_at(frame.template var_storage<var_index_c.value>(), std::forward<P>(params)...);
                                 vars_done[packed_var_index] = true;
                                 // GCC 12 warns about out-of-range index without this assert.
                                 // I wasn't able to trigger it, so I'll keep it, just in case.
                                 RCORO_ASSERT(guard.i < (int)std::size(guard.funcs));
-                                guard.funcs[guard.i++] = [](specific_coro &self) noexcept {std::destroy_at(&self.frame.template var<var_index_const.value>());};
+                                guard.funcs[guard.i++] = [](specific_coro &self) noexcept {std::destroy_at(&self.frame.template var<var_index_c.value>());};
                             }, decltype(extra)(extra)...);
                         });
                     });

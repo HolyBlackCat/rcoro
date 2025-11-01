@@ -4,20 +4,22 @@ on: [push, pull_request]
 
 jobs:
   Tests:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
     - name: Checkout
       uses: actions/checkout@v3
     - name: Install packages
       run: |
         # Install latest GCC.
-        sudo apt install -y g++-12
+        sudo apt install -y g++-14 g++-13 g++-12 g++-11 g++-10
         # Install latest Clang.
         wget https://apt.llvm.org/llvm.sh
         chmod +x llvm.sh
-        sudo ./llvm.sh 16
         sudo ./llvm.sh 17
         sudo ./llvm.sh 18
+        sudo ./llvm.sh 19
+        sudo ./llvm.sh 20
+        sudo ./llvm.sh 21
         # Remove unsupported Clang.
         sudo apt remove clang-13
     - name: Clone deps
@@ -25,9 +27,9 @@ jobs:
     - name: List compilers
       run: make -pq | grep ^COMPILER
     - name: Confirm installed compilers
-      run: which clang++-18 clang++-17 clang++-16 clang++-15 g++-13 g++-12 g++-11 g++-10
+      run: which clang++-21 clang++-20 clang++-19 clang++-18 clang++-17 g++-14 g++-13 g++-12 g++-11 g++-10
     - name: Run tests
-      run: make COMPILER='clang++-18 clang++-17 clang++-16 clang++-15 g++-13 g++-12 g++-11 g++-10' CXXFLAGS='-Werror'
+      run: make COMPILER='clang++-21 clang++-20 clang++-19 clang++-18 clang++-17 g++-15 g++-14 g++-13 g++-12 g++-11 g++-10' CXXFLAGS='-Werror'
   Tests-MSVC:
     runs-on: windows-latest
     steps:
